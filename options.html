@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Handsome Guy Code Review Assistant - Settings</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Review Extension - Settings</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -10,18 +11,36 @@
         max-width: 600px;
         margin: 40px auto;
         padding: 20px;
-        background: #f8fafc;
-        color: #1e293b;
+        background: #f8f9fa;
+        line-height: 1.6;
       }
 
-      .header {
-        text-align: center;
-        margin-bottom: 40px;
+      .container {
+        background: white;
+        padding: 30px;
+        border-radius: 12px;
+        box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
       }
 
-      .header h1 {
-        color: #667eea;
+      h1 {
+        color: #2c3e50;
         margin-bottom: 8px;
+        font-size: 28px;
+        font-weight: 600;
+      }
+
+      .subtitle {
+        color: #6c757d;
+        margin-bottom: 15px;
+        font-size: 16px;
+      }
+
+      .author {
+        color: #28a745;
+        margin-bottom: 30px;
+        font-size: 14px;
+        font-weight: 500;
+        font-style: italic;
       }
 
       .form-group {
@@ -30,140 +49,291 @@
 
       label {
         display: block;
-        font-weight: 500;
         margin-bottom: 8px;
+        font-weight: 500;
+        color: #495057;
+        font-size: 14px;
       }
 
       input[type="text"],
-      input[type="password"] {
+      select {
         width: 100%;
-        padding: 12px;
-        border: 1px solid #d0d7de;
-        border-radius: 6px;
+        padding: 12px 16px;
+        border: 2px solid #e9ecef;
+        border-radius: 8px;
         font-size: 14px;
+        transition: all 0.3s ease;
         box-sizing: border-box;
       }
 
-      .help-text {
-        font-size: 12px;
-        color: #656d76;
-        margin-top: 4px;
+      input[type="text"]:focus,
+      select:focus {
+        outline: none;
+        border-color: #007bff;
+        box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
       }
 
-      .save-btn {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      select {
+        cursor: pointer;
+        background-color: white;
+      }
+
+      .model-select-container {
+        position: relative;
+      }
+
+      .model-controls {
+        display: flex;
+        gap: 12px;
+        margin-top: 8px;
+      }
+
+      .load-models-btn {
+        background: linear-gradient(135deg, #28a745, #20c997);
         color: white;
         border: none;
-        padding: 12px 24px;
+        padding: 10px 16px;
         border-radius: 6px;
         font-size: 14px;
         font-weight: 500;
         cursor: pointer;
+        transition: all 0.3s ease;
+        flex: 1;
+      }
+
+      .load-models-btn:hover:not(:disabled) {
+        background: linear-gradient(135deg, #20c997, #17a2b8);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(40, 167, 69, 0.3);
+      }
+
+      .load-models-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .loading-spinner {
+        position: absolute;
+        right: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 16px;
+        height: 16px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #007bff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        display: none;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: translateY(-50%) rotate(0deg);
+        }
+        100% {
+          transform: translateY(-50%) rotate(360deg);
+        }
+      }
+
+      .save-btn,
+      .test-btn {
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.3s ease;
         width: 100%;
+        margin-top: 8px;
+      }
+
+      .save-btn {
+        background: linear-gradient(135deg, #007bff, #0056b3);
       }
 
       .save-btn:hover {
-        opacity: 0.9;
+        background: linear-gradient(135deg, #0056b3, #004085);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+      }
+
+      .test-btn {
+        background: linear-gradient(135deg, #6f42c1, #5a2d91);
+      }
+
+      .test-btn:hover {
+        background: linear-gradient(135deg, #5a2d91, #4c1d7a);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(111, 66, 193, 0.3);
+      }
+
+      .save-btn:active,
+      .test-btn:active {
+        transform: translateY(0);
       }
 
       .status {
-        padding: 12px;
-        border-radius: 6px;
+        padding: 12px 16px;
+        border-radius: 8px;
         margin-top: 16px;
+        font-weight: 500;
         display: none;
       }
 
       .status.success {
-        background: #d1fae5;
-        color: #065f46;
-        border: 1px solid #a7f3d0;
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
       }
 
       .status.error {
-        background: #fee2e2;
-        color: #991b1b;
-        border: 1px solid #fecaca;
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
       }
 
-      .instructions {
-        background: white;
-        padding: 20px;
+      .status.info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+      }
+
+      .help-text {
+        font-size: 13px;
+        color: #6c757d;
+        margin-top: 6px;
+        line-height: 1.4;
+      }
+
+      .api-key-help {
+        background: #f8f9fa;
+        padding: 16px;
         border-radius: 8px;
-        border: 1px solid #e2e8f0;
-        margin-bottom: 24px;
+        margin-top: 8px;
+        border-left: 4px solid #007bff;
       }
 
-      .instructions h3 {
-        margin-top: 0;
-        color: #1e293b;
+      .api-key-help h4 {
+        margin: 0 0 8px 0;
+        color: #495057;
+        font-size: 14px;
       }
 
-      .instructions ol {
-        padding-left: 20px;
+      .api-key-help p {
+        margin: 0;
+        font-size: 13px;
+        color: #6c757d;
       }
 
-      .instructions li {
-        margin-bottom: 8px;
-        line-height: 1.5;
-      }
-
-      .instructions a {
-        color: #667eea;
+      .api-key-help a {
+        color: #007bff;
         text-decoration: none;
       }
 
-      .instructions a:hover {
+      .api-key-help a:hover {
         text-decoration: underline;
+      }
+
+      .model-info {
+        background: #e3f2fd;
+        padding: 12px;
+        border-radius: 6px;
+        margin-top: 8px;
+        font-size: 13px;
+        color: #1565c0;
+      }
+
+      .model-load-info {
+        background: #fff3cd;
+        padding: 12px;
+        border-radius: 6px;
+        margin-top: 8px;
+        font-size: 13px;
+        color: #856404;
+        border: 1px solid #ffeaa7;
+      }
+
+      .recommended-badge {
+        background: #28a745;
+        color: white;
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-left: 8px;
+        font-weight: 500;
       }
     </style>
   </head>
   <body>
-    <div class="header">
+    <div class="container">
       <h1>🔍 Handsome Guy Review Code Assistant</h1>
-      <p>Configure your settings to start using AI-powered code reviews 🚀</p>
-      <p>Implement by SonLV handsome</p>
-    </div>
-
-    <div class="instructions">
-      <h3>📋 Setup Instructions</h3>
-      <ol>
-        <li>
-          Go to
-          <a href="https://makersuite.google.com/app/apikey" target="_blank"
-            >Google AI Studio</a
-          >
-        </li>
-        <li>Sign in with your Google account</li>
-        <li>Click "Create API Key" button</li>
-        <li>Copy the generated API key</li>
-        <li>Paste it in the field below and click Save</li>
-      </ol>
-      <p>
-        <strong>Note:</strong> Your API key is stored locally and only used to
-        call Google's Gemini AI service.
+      <p class="subtitle">
+        Configure your settings to start using AI-powered code reviews 🚀
       </p>
-    </div>
+      <p class="author">Implement by SonLV handsome</p>
 
-    <form id="settingsForm">
-      <div class="form-group">
-        <label for="apiKey">Google Gemini API Key</label>
-        <input
-          type="password"
-          id="apiKey"
-          placeholder="Enter your Gemini API key"
-        />
-        <div class="help-text">
-          Get your free API key from
-          <a href="https://makersuite.google.com/app/apikey" target="_blank"
-            >Google AI Studio</a
-          >
+      <form id="settingsForm">
+        <div class="form-group">
+          <label for="apiKey">Google Gemini API Key *</label>
+          <input
+            type="text"
+            id="apiKey"
+            placeholder="Enter your API key (starts with AIza...)"
+            required
+          />
+          <div class="api-key-help">
+            <h4>🔑 How to get your API key:</h4>
+            <p>
+              1. Visit
+              <a href="https://makersuite.google.com/app/apikey" target="_blank"
+                >Google AI Studio</a
+              >
+            </p>
+            <p>2. Sign in with your Google account</p>
+            <p>3. Create a new API key</p>
+            <p>4. Copy and paste it above</p>
+          </div>
         </div>
-      </div>
 
-      <button type="submit" class="save-btn">💾 Save Settings</button>
+        <div class="form-group">
+          <label for="modelSelect">AI Model *</label>
+          <div class="model-select-container">
+            <select id="modelSelect" required>
+              <option value="">Select a model...</option>
+            </select>
+            <div class="loading-spinner" id="loadingSpinner"></div>
+          </div>
+
+          <div class="model-controls">
+            <button type="button" id="loadModelsBtn" class="load-models-btn">
+              🔄 Load Available Models
+            </button>
+          </div>
+
+          <div class="model-load-info">
+            <strong>💡 Tip:</strong> Click "Load Available Models" to fetch the
+            latest models from Google AI. Make sure to enter your API key first!
+          </div>
+
+          <div class="model-info">
+            <strong>📋 Model Types:</strong><br />
+            • <strong>Gemini 2.5 Pro:</strong> Best for complex code analysis
+            and detailed reviews<br />
+            • <strong>Gemini 1.5 Pro:</strong> Excellent balance of quality and
+            speed<br />
+            • <strong>Gemini 1.5 Flash:</strong> Fastest responses for quick
+            reviews
+          </div>
+        </div>
+
+        <button type="submit" class="save-btn">💾 Save Settings</button>
+      </form>
 
       <div id="status" class="status"></div>
-    </form>
+    </div>
 
     <script src="options.js"></script>
   </body>
