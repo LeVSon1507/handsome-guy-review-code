@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Handsome guy Code Review Assistant",
+  "name": "AI Code Review Assistant",
   "version": "1.0.0",
-  "description": "AI-powered inline code review for GitHub Pull Requests",
+  "description": "AI-powered code review assistant for GitHub Pull Requests with Google Gemini integration",
 
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab"],
 
   "host_permissions": [
     "https://github.com/*",
@@ -21,15 +21,20 @@
 
   "action": {
     "default_popup": "popup.html",
-    "default_title": "AI Code Review Assistant"
+    "default_title": "AI Code Review Assistant",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
 
   "options_page": "options.html",
 
   "icons": {
     "16": "icons/icon16.png",
-    "48": "icons/icon48.jpg",
-    "128": "icons/icon128.jpg"
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
 
   "background": {

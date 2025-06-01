@@ -79,6 +79,28 @@
     });
   }
 
+  function getModals() {
+    return new Promise((resolve) => {
+      try {
+        if (typeof chrome !== "undefined" && chrome.storage?.sync) {
+          chrome.storage.sync.get(["modal"], (result) => {
+            if (chrome.runtime.lastError) {
+              console.warn("Storage error:", chrome.runtime.lastError);
+              resolve(localStorage.getItem("ai-review-selected-model") || null);
+            } else {
+              resolve(result.modal || null);
+            }
+          });
+        } else {
+          resolve(localStorage.getItem("ai-review-selected-model") || null);
+        }
+      } catch (error) {
+        console.warn("Storage access failed:", error);
+        resolve(localStorage.getItem("ai-review-selected-model") || null);
+      }
+    });
+  }
+
   // UI Components
   function createFloatingButton() {
     if (floatingButton) {
@@ -241,7 +263,6 @@
       }
     });
 
-    console.log("Extracted diff data:", diffData);
     return diffData;
   }
 
@@ -249,9 +270,6 @@
     for (const selector of SELECTORS.file) {
       const elements = document.querySelectorAll(selector);
       if (elements.length > 0) {
-        console.log(
-          `Found ${elements.length} files using selector: ${selector}`
-        );
         return Array.from(elements);
       }
     }
@@ -417,9 +435,11 @@
   async function analyzeCodeDiff(diffData, apiKey) {
     const diffText = formatDiffForAnalysis(diffData);
     const prompt = createAnalysisPrompt(diffText);
+    const modal =
+      (await getModals()) ?? "models/gemini-2.0-flash-thinking-exp-01-21";
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/${modal}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -506,7 +526,7 @@
         return JSON.parse(jsonMatch[0]);
       }
     } catch (e) {
-      console.error("JSON parse error:", e);
+      console.warn("Failed to parse AI response");
     }
     return [];
   }
