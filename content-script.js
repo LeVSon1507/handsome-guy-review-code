@@ -86,12 +86,12 @@
     return new Promise((resolve) => {
       try {
         if (typeof chrome !== "undefined" && chrome.storage?.sync) {
-          chrome.storage.sync.get(["modal"], (result) => {
+          chrome.storage.sync.get(["selectedModel"], (result) => {
             if (chrome.runtime.lastError) {
               console.warn("Storage error:", chrome.runtime.lastError);
               resolve(localStorage.getItem("ai-review-selected-model") || null);
             } else {
-              resolve(result.modal || null);
+              resolve(result.selectedModel || null);
             }
           });
         } else {
@@ -382,7 +382,10 @@
       handleAnalysisResults(suggestions, diffData);
     } catch (error) {
       console.error("Analysis error:", error);
-      showNotification("Analysis failed: " + error.message, "error");
+      showNotification(
+        "Analysis failed: " + error.message + " try again",
+        "error"
+      );
     } finally {
       isAnalyzing = false;
       updateButtonState(false);
@@ -598,11 +601,12 @@
   async function analyzeCodeDiff(diffData, apiKey) {
     const diffText = formatDiffForAnalysis(diffData);
     const prompt = createAnalysisPrompt(diffText);
-    const modal =
-      (await getModals()) ?? "models/gemini-2.0-flash-thinking-exp-01-21";
+    const modal = await getModals();
+
+    const selectedModel = modal || "models/gemini-2.0-flash-thinking-exp-01-21";
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/${modal}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -626,7 +630,7 @@
     const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!responseText) {
-      throw new Error("No response from AI");
+      throw new Error("No response from AI, please try again.");
     }
 
     return parseAIResponse(responseText);
@@ -689,8 +693,7 @@
         return JSON.parse(jsonMatch[0]);
       }
     } catch (e) {
-      console.error("Failed to parse AI response:", e.message);
-      throw e;
+      console.warn("Failed to parse AI response:", e.message);
     }
     return [];
   }
@@ -1009,7 +1012,8 @@
       window.location.hostname === "github.com" &&
       (window.location.pathname.includes("/pull/") ||
         window.location.pathname.includes("/compare/") ||
-        window.location.pathname.includes("/commit/"))
+        window.location.pathname.includes("/commit/")) &&
+      hasDiffContent()
     );
   }
 
@@ -1022,14 +1026,20 @@
   function initialize() {
     if (isGitHubDiffPage()) {
       setTimeout(() => {
-        if (
-          hasDiffContent() &&
-          !document.getElementById("code-review-assistant-btn")
-        ) {
+        if (!document.getElementById("code-review-assistant-btn")) {
           createFloatingButton();
           createNavigationButtons();
         }
       }, 1500);
+    } else {
+      if (floatingButton) {
+        floatingButton.remove();
+        floatingButton = null;
+      }
+      if (navigationButtons) {
+        navigationButtons.remove();
+        navigationButtons = null;
+      }
     }
   }
 

@@ -435,12 +435,82 @@ document.addEventListener("DOMContentLoaded", function () {
         STATUS_TYPES.SUCCESS
       );
     } else {
-      response.text().then((errorText) => {
-        showStatus(
-          `❌ Test failed: ${response.status} - ${errorText}`,
-          STATUS_TYPES.ERROR
-        );
-      });
+      response
+        .text()
+        .then((errorText) => {
+          const errorMessage = getErrorMessage(response.status, errorText);
+          showStatus(errorMessage, STATUS_TYPES.ERROR);
+        })
+        .catch(() => {
+          const errorMessage = getErrorMessage(
+            response.status,
+            "Unable to read error details"
+          );
+          showStatus(errorMessage, STATUS_TYPES.ERROR);
+        });
+    }
+  }
+
+  function parseErrorDetails(errorText) {
+    try {
+      const errorData = JSON.parse(errorText);
+
+      if (errorData.error) {
+        const error = errorData.error;
+
+        if (error.message) {
+          return error.message;
+        }
+
+        if (error.details && error.details.length > 0) {
+          return (
+            error.details[0].reason ||
+            error.details[0].message ||
+            "Unknown error"
+          );
+        }
+
+        return error.code || error.status || "Unknown API error";
+      }
+
+      return errorText || "Unknown error occurred";
+    } catch (error) {
+      console.warn("Error parsing error details:", error);
+      return "Unknown error occurred while parsing error details";
+    }
+  }
+
+  function getErrorMessage(status, errorText) {
+    const baseMessage = `❌ Test failed (${status}):`;
+
+    switch (status) {
+      case 400:
+        return `${baseMessage} Invalid request. Please check your API key and model selection.`;
+
+      case 401:
+        return `${baseMessage} Invalid API key. Please verify your Gemini API key is correct.`;
+
+      case 403:
+        return `${baseMessage} Access forbidden. Your API key may not have permission for this model.`;
+
+      case 404:
+        return `${baseMessage} Model not found. Please check if the selected model is available.`;
+
+      case 429:
+        return `${baseMessage} Rate limit exceeded. Please wait a moment and try again.`;
+
+      case 500:
+        return `${baseMessage} Server error. Google's API is experiencing issues. Please try again later.`;
+
+      case 502:
+      case 503:
+      case 504:
+        return `${baseMessage} Service unavailable. Google's API is temporarily down. Please try again later.`;
+
+      default: {
+        const detailedError = parseErrorDetails(errorText);
+        return `${baseMessage} ${detailedError}`;
+      }
     }
   }
 
