@@ -362,8 +362,8 @@
       clearPreviousSuggestions();
       hideNavigationButtons();
 
-      const diffData = extractDiffData();
-      if (!diffData || diffData.length === 0) {
+      const rawDiffData = extractDiffData();
+      if (!rawDiffData || rawDiffData.length === 0) {
         showNotification("No code changes found to analyze", "warning");
         return;
       }
@@ -378,14 +378,22 @@
         return;
       }
 
-      const suggestions = await analyzeCodeDiff(diffData, apiKey);
-      handleAnalysisResults(suggestions, diffData);
+      // 🚀 Apply optimizations
+      const prioritizedFiles = prioritizeFiles(rawDiffData);
+      const optimizedDiff = optimizeDiffForAnalysis(prioritizedFiles);
+
+      if (optimizedDiff.length === 0) {
+        showNotification("No significant changes to analyze", "warning");
+        return;
+      }
+
+      showNotification(`Analyzing ${optimizedDiff.length} files...`, "success");
+
+      const suggestions = await analyzeCodeDiffOptimized(optimizedDiff, apiKey);
+      handleAnalysisResults(suggestions, rawDiffData);
     } catch (error) {
       console.error("Analysis error:", error);
-      showNotification(
-        "Analysis failed: " + error.message + " try again",
-        "error"
-      );
+      showNotification("Analysis failed: " + error.message, "error");
     } finally {
       isAnalyzing = false;
       updateButtonState(false);
@@ -597,6 +605,135 @@
     return null;
   }
 
+  // Token optimization functions
+  function optimizeDiffForAnalysis(diffData) {
+    return diffData
+      .map((file) => ({
+        fileName: file.fileName,
+        lines: file.lines
+          .filter((line) => line.type === "added") // Chỉ focus vào added lines
+          .filter((line) => line.content.trim().length > 0) // Loại bỏ empty lines
+          .filter((line) => !isCommentOrWhitespace(line.content)) // Loại bỏ comments
+          .slice(0, 50), // Limit số dòng per file
+        container: file.container,
+      }))
+      .filter((file) => file.lines.length > 0);
+  }
+
+  function isCommentOrWhitespace(content) {
+    const trimmed = content.trim();
+    return (
+      trimmed === "" ||
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("#") ||
+      trimmed.startsWith("<!--") ||
+      /^\/\*\*/.test(trimmed) || // JSDoc comments
+      /^\s*\*/.test(trimmed)
+    ); // Multi-line comment continuation
+  }
+
+  function prioritizeFiles(diffData) {
+    const priorities = {
+      ".js": 5,
+      ".ts": 5,
+      ".jsx": 5,
+      ".tsx": 5,
+      ".py": 4,
+      ".java": 4,
+      ".cpp": 4,
+      ".c": 4,
+      ".cs": 4,
+      ".php": 3,
+      ".rb": 3,
+      ".go": 3,
+      ".rs": 3,
+      ".css": 2,
+      ".scss": 2,
+      ".less": 2,
+      ".html": 2,
+      ".md": 1,
+      ".txt": 1,
+      ".json": 1,
+      ".yml": 1,
+      ".yaml": 1,
+    };
+
+    return diffData
+      .map((file) => ({
+        ...file,
+        priority: getFilePriority(file.fileName, priorities),
+        changeCount: file.lines.filter((l) => l.type === "added").length,
+      }))
+      .filter((file) => file.changeCount > 0) // Only files with actual changes
+      .sort((a, b) => b.priority - a.priority || b.changeCount - a.changeCount)
+      .slice(0, 10); // Limit to top 10 files
+  }
+
+  function getFilePriority(fileName, priorities) {
+    const ext = fileName.substring(fileName.lastIndexOf(".")).toLowerCase();
+    return priorities[ext] || 3;
+  }
+
+  function chunkDiffData(diffData, maxTokensPerChunk = 1500) {
+    const chunks = [];
+    let currentChunk = [];
+    let currentTokenCount = 0;
+
+    for (const file of diffData) {
+      const fileTokens = estimateTokens(formatFileForAnalysis(file));
+
+      if (
+        currentTokenCount + fileTokens > maxTokensPerChunk &&
+        currentChunk.length > 0
+      ) {
+        chunks.push(currentChunk);
+        currentChunk = [file];
+        currentTokenCount = fileTokens;
+      } else {
+        currentChunk.push(file);
+        currentTokenCount += fileTokens;
+      }
+    }
+
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+    }
+
+    return chunks;
+  }
+
+  function estimateTokens(text) {
+    // Rough estimation: 1 token ≈ 4 characters for code
+    return Math.ceil(text.length / 4);
+  }
+
+  function formatFileForAnalysis(file) {
+    let result = `--- ${file.fileName} ---\n`;
+    file.lines.forEach((line) => {
+      const prefix = line.type === "added" ? "+" : " ";
+      result += `${prefix} ${line.lineNumber || ""}: ${line.content}\n`;
+    });
+    return result;
+  }
+
+  function deduplicateSuggestions(suggestions) {
+    const seen = new Set();
+    return suggestions.filter((suggestion) => {
+      const key = `${suggestion.fileName}:${suggestion.lineNumber}:${suggestion.type}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   // AI Call
   async function analyzeCodeDiff(diffData, apiKey) {
     const diffText = formatDiffForAnalysis(diffData);
@@ -636,6 +773,93 @@
     return parseAIResponse(responseText);
   }
 
+  async function analyzeCodeDiffOptimized(diffData, apiKey) {
+    // Chunk large diffs
+    const chunks = chunkDiffData(diffData, 1500); // Conservative limit
+    const allSuggestions = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const diffText = formatDiffForAnalysis(chunk);
+      const prompt = createAnalysisPrompt(diffText, chunk.length, i);
+
+      try {
+        const suggestions = await callGeminiAPI(prompt, apiKey, i);
+        allSuggestions.push(...suggestions);
+
+        // Add delay between chunks to respect rate limits
+        if (i < chunks.length - 1) {
+          await delay(1000);
+          showNotification(
+            `Processing chunk ${i + 2}/${chunks.length}...`,
+            "success"
+          );
+        }
+      } catch (error) {
+        console.warn(`Chunk ${i + 1} failed:`, error);
+        continue;
+      }
+    }
+
+    return deduplicateSuggestions(allSuggestions);
+  }
+
+  async function callGeminiAPI(prompt, apiKey, chunkIndex = 0) {
+    const modal = await getModals();
+    const selectedModel = modal || "models/gemini-2.0-flash-thinking-exp-01-21";
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1, // Lower for more focused responses
+            topK: 20, // Reduced from 40
+            topP: 0.8, // Reduced from 0.95
+            maxOutputTokens: 2048, // Reduced from 4096
+          },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`API Error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Check if response was truncated
+    if (data?.candidates?.[0]?.finishReason === "MAX_TOKENS") {
+      console.warn(
+        `Chunk ${chunkIndex}: Response truncated due to token limit`
+      );
+    }
+
+    const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!responseText) {
+      throw new Error("No response from AI, please try again.");
+    }
+
+    return parseAIResponse(responseText);
+  }
+
+  // function createAnalysisPrompt(diffText, fileCount = 1, chunkIndex = 0) {
+  //   return `Analyze GitHub PR diff. Focus ONLY on NEW code (+ lines). Return JSON array:
+  //   [{"id":"${chunkIndex}_1","fileName":"file.js","lineNumber":10,"type":"bug","severity":"high","title":"Issue","description":"Detail","suggestedFix":"Fix","reasoning":"Why"}]
+
+  //   Priority: bugs > security > performance > style
+  // Max 8 suggestions per response
+  // Only critical/high-impact issues
+  //   DIFF (${fileCount} files):
+  //   ${diffText}
+
+  //   JSON only:`;
+  // }
+
   function createAnalysisPrompt(diffText) {
     return `
     Please analyze this GitHub Pull Request diff and provide specific, actionable code review suggestions.
@@ -664,8 +888,6 @@
     
     DIFF TO ANALYZE:
     ${diffText}
-    
-    Return only the JSON array, no other text.
     `;
   }
 
