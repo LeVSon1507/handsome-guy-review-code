@@ -55,6 +55,9 @@
   // State
   let isAnalyzing = false;
   let floatingButton = null;
+  let navigationButtons = null;
+  let currentSuggestionIndex = 0;
+  let totalSuggestions = 0;
 
   // Storage utilities
   function getApiKey() {
@@ -101,6 +104,16 @@
     });
   }
 
+  // Dark mode detection
+  function isDarkMode() {
+    return (
+      document.documentElement.getAttribute("data-color-mode") === "dark" ||
+      document.documentElement.getAttribute("data-theme") === "dark" ||
+      document.body.classList.contains("dark") ||
+      window.matchMedia("(prefers-color-scheme: dark)").matches
+    );
+  }
+
   // UI Components
   function createFloatingButton() {
     if (floatingButton) {
@@ -124,6 +137,153 @@
     document.body.appendChild(floatingButton);
 
     return floatingButton;
+  }
+
+  function createNavigationButtons() {
+    if (navigationButtons) {
+      navigationButtons.remove();
+    }
+
+    navigationButtons = document.createElement("div");
+    navigationButtons.id = "suggestion-navigation";
+    navigationButtons.style.cssText = `
+      position: fixed;
+      top: 130px;
+      right: 20px;
+      z-index: 9999;
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+    `;
+
+    const prevButton = createNavButton("↑", "Previous suggestion", () =>
+      navigateToSuggestion(-1)
+    );
+    const nextButton = createNavButton("↓", "Next suggestion", () =>
+      navigateToSuggestion(1)
+    );
+    const counter = createSuggestionCounter();
+
+    navigationButtons.appendChild(prevButton);
+    navigationButtons.appendChild(counter);
+    navigationButtons.appendChild(nextButton);
+
+    document.body.appendChild(navigationButtons);
+    return navigationButtons;
+  }
+
+  function createNavButton(text, title, onClick) {
+    const button = document.createElement("button");
+    button.style.cssText = `
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      width: 30px;
+      height: 30px;
+      border-radius: 15px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
+    button.textContent = text;
+    button.title = title;
+    button.addEventListener("click", onClick);
+
+    button.addEventListener("mouseenter", function () {
+      this.style.transform = "scale(1.1)";
+      this.style.boxShadow = "0 4px 12px rgba(0,0,0,0.2)";
+    });
+
+    button.addEventListener("mouseleave", function () {
+      this.style.transform = "scale(1)";
+      this.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
+    });
+
+    return button;
+  }
+
+  function createSuggestionCounter() {
+    const counter = document.createElement("div");
+    counter.id = "suggestion-counter";
+    counter.style.cssText = `
+      background: rgba(102, 126, 234, 0.9);
+      color: white;
+      padding: 4px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      text-align: center;
+      min-width: 30px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    `;
+    return counter;
+  }
+
+  function updateSuggestionCounter() {
+    const counter = document.getElementById("suggestion-counter");
+    if (counter && totalSuggestions > 0) {
+      counter.textContent = `${currentSuggestionIndex + 1}/${totalSuggestions}`;
+    }
+  }
+
+  function navigateToSuggestion(direction) {
+    const suggestions = document.querySelectorAll(".ai-suggestion-row");
+    if (suggestions.length === 0) return;
+
+    totalSuggestions = suggestions.length;
+    currentSuggestionIndex =
+      (currentSuggestionIndex + direction + totalSuggestions) %
+      totalSuggestions;
+
+    const targetSuggestion = suggestions[currentSuggestionIndex];
+    targetSuggestion.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+
+    // Highlight current suggestion
+    suggestions.forEach((s, index) => {
+      const suggestionDiv = s.querySelector("div");
+      if (suggestionDiv) {
+        if (index === currentSuggestionIndex) {
+          suggestionDiv.style.boxShadow =
+            "0 0 0 2px #667eea, 0 4px 12px rgba(0,0,0,0.15)";
+          suggestionDiv.style.transform = "scale(1.02)";
+        } else {
+          suggestionDiv.style.boxShadow = "0 1px 3px rgba(0,0,0,0.1)";
+          suggestionDiv.style.transform = "scale(1)";
+        }
+      }
+    });
+
+    updateSuggestionCounter();
+  }
+
+  function showNavigationButtons() {
+    if (navigationButtons) {
+      navigationButtons.style.display = "flex";
+      totalSuggestions = document.querySelectorAll(".ai-suggestion-row").length;
+      currentSuggestionIndex = 0;
+      updateSuggestionCounter();
+
+      // Auto navigate to first suggestion
+      setTimeout(() => {
+        if (totalSuggestions > 0) {
+          navigateToSuggestion(0);
+        }
+      }, 500);
+    }
+  }
+
+  function hideNavigationButtons() {
+    if (navigationButtons) {
+      navigationButtons.style.display = "none";
+    }
   }
 
   function getButtonStyles() {
@@ -200,6 +360,7 @@
       isAnalyzing = true;
       updateButtonState(true);
       clearPreviousSuggestions();
+      hideNavigationButtons();
 
       const diffData = extractDiffData();
       if (!diffData || diffData.length === 0) {
@@ -239,8 +400,10 @@
   function handleAnalysisResults(suggestions, diffData) {
     if (suggestions && suggestions.length > 0) {
       injectSuggestions(suggestions, diffData);
+      showNavigationButtons();
       showNotification(`Found ${suggestions.length} suggestions`, "success");
     } else {
+      hideNavigationButtons();
       showNotification("No issues found. Code looks good!", "success");
     }
   }
@@ -526,12 +689,13 @@
         return JSON.parse(jsonMatch[0]);
       }
     } catch (e) {
-      console.warn("Failed to parse AI response");
+      console.error("Failed to parse AI response:", e.message);
+      throw e;
     }
     return [];
   }
 
-  // Suggestion injection
+  // suggestion injection
   function injectSuggestions(suggestions, diffData) {
     suggestions.forEach((suggestion) => {
       const targetFile = findTargetFile(suggestion, diffData);
@@ -604,8 +768,13 @@
   }
 
   function getSuggestionStyles(severity) {
+    const darkMode = isDarkMode();
+    const backgroundColor = darkMode
+      ? "linear-gradient(135deg, #21262d 0%, #30363d 100%)"
+      : "linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)";
+
     return `
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        background: ${backgroundColor};
         border-left: 4px solid ${
           SEVERITY_COLORS[severity] || SEVERITY_COLORS.default
         };
@@ -615,6 +784,7 @@
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         font-size: 13px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        transition: all 0.2s ease;
       `;
   }
 
@@ -677,8 +847,11 @@
   }
 
   function createSuggestionTitle(titleText) {
+    const darkMode = isDarkMode();
+    const textColor = darkMode ? "#f0f6fc" : "#1e293b";
+
     const title = document.createElement("strong");
-    title.style.cssText = "font-size: 13px; color: #1e293b;";
+    title.style.cssText = `font-size: 13px; color: ${textColor};`;
     title.textContent = titleText;
     return title;
   }
@@ -694,7 +867,21 @@
     [helpfulBtn, notHelpfulBtn, dismissBtn].forEach((btn) => {
       btn.addEventListener("click", (e) => {
         const suggestionRow = e.target.closest(".ai-suggestion-row");
-        if (suggestionRow) suggestionRow.remove();
+        if (suggestionRow) {
+          suggestionRow.remove();
+          // Update navigation after removing suggestion
+          const remainingSuggestions =
+            document.querySelectorAll(".ai-suggestion-row");
+          if (remainingSuggestions.length === 0) {
+            hideNavigationButtons();
+          } else {
+            totalSuggestions = remainingSuggestions.length;
+            if (currentSuggestionIndex >= totalSuggestions) {
+              currentSuggestionIndex = totalSuggestions - 1;
+            }
+            updateSuggestionCounter();
+          }
+        }
       });
     });
 
@@ -732,18 +919,25 @@
   }
 
   function createSuggestionDescription(suggestion) {
+    const darkMode = isDarkMode();
+    const textColor = darkMode ? "#c9d1d9" : "#4a5568";
+
     const description = document.createElement("div");
-    description.style.cssText =
-      "color: #4a5568; line-height: 1.4; margin-bottom: 8px;";
+    description.style.cssText = `color: ${textColor}; line-height: 1.4; margin-bottom: 8px;`;
     description.textContent = suggestion.description;
     return description;
   }
-
   function createSuggestedFix(suggestedFix) {
+    const darkMode = isDarkMode();
+    const backgroundColor = darkMode ? "#161b22" : "#f1f3f4";
+    const borderColor = darkMode ? "#30363d" : "#d0d7de";
+    const textColor = darkMode ? "#e6edf3" : "#24292f";
+    const labelColor = darkMode ? "#8b949e" : "#6a737d";
+
     const fixDiv = document.createElement("div");
     fixDiv.style.cssText = `
-        background: #f1f3f4;
-        border: 1px solid #d0d7de;
+        background: ${backgroundColor};
+        border: 1px solid ${borderColor};
         border-radius: 4px;
         padding: 8px;
         font-family: 'SFMono-Regular', Consolas, monospace;
@@ -753,13 +947,21 @@
       `;
 
     const fixLabel = document.createElement("div");
-    fixLabel.style.cssText =
-      "font-size: 11px; color: #6a737d; margin-bottom: 4px; font-weight: 600;";
+    fixLabel.style.cssText = `
+        font-size: 11px; 
+        color: ${labelColor}; 
+        margin-bottom: 4px; 
+        font-weight: 600;
+      `;
     fixLabel.textContent = "💡 Suggested fix:";
 
     const fixCode = document.createElement("pre");
-    fixCode.style.cssText =
-      "margin: 0; white-space: pre-wrap; word-wrap: break-word;";
+    fixCode.style.cssText = `
+        margin: 0; 
+        white-space: pre-wrap; 
+        word-wrap: break-word;
+        color: ${textColor};
+      `;
     fixCode.textContent = suggestedFix;
 
     fixDiv.appendChild(fixLabel);
@@ -772,6 +974,11 @@
     document
       .querySelectorAll(".ai-suggestion-row")
       .forEach((row) => row.remove());
+
+    // Reset navigation state
+    currentSuggestionIndex = 0;
+    totalSuggestions = 0;
+    hideNavigationButtons();
   }
 
   function showNotification(message, type) {
@@ -820,6 +1027,7 @@
           !document.getElementById("code-review-assistant-btn")
         ) {
           createFloatingButton();
+          createNavigationButtons();
         }
       }, 1500);
     }
