@@ -359,13 +359,16 @@
 
     try {
       isAnalyzing = true;
-      updateButtonState(true);
+      updateButtonState(true); // Keep this for overall state
       clearPreviousSuggestions();
       hideNavigationButtons();
 
-      const diffData = extractDiffData();
-      if (!diffData || diffData.length === 0) {
+      const allDiffData = extractDiffData(); // Get all file diffs
+      if (!allDiffData || allDiffData.length === 0) {
         showNotification("No code changes found to analyze", "warning");
+        // Ensure isAnalyzing is reset before returning
+        isAnalyzing = false;
+        updateButtonState(false);
         return;
       }
 
@@ -376,11 +379,55 @@
           "error"
         );
         openOptionsPage();
+        // Ensure isAnalyzing is reset before returning
+        isAnalyzing = false;
+        updateButtonState(false);
         return;
       }
 
-      const suggestions = await analyzeCodeDiff(diffData, apiKey);
-      handleAnalysisResults(suggestions, diffData);
+      let allSuggestions = [];
+      const totalFiles = allDiffData.length;
+      let filesProcessed = 0;
+
+      // Get the button text element once
+      const btnText = document.getElementById("btn-text");
+      const originalBtnText = btnText ? btnText.textContent : "AI Review"; // Store original text
+
+      for (const fileDiff of allDiffData) {
+        filesProcessed++;
+        if (btnText) {
+          // Update button text to show progress
+          btnText.textContent = `Analyzing ${filesProcessed}/${totalFiles}...`;
+        }
+
+        try {
+          // Pass only ONE file's diff data, wrapped in an array,
+          // and the specific file name for better prompt context.
+          const suggestionsForFile = await analyzeCodeDiff(
+            [fileDiff],
+            apiKey,
+            fileDiff.fileName
+          );
+          if (suggestionsForFile && suggestionsForFile.length > 0) {
+            allSuggestions.push(...suggestionsForFile);
+          }
+        } catch (fileError) {
+          console.error(
+            `Error analyzing file ${fileDiff.fileName}:`,
+            fileError
+          );
+          showNotification(
+            `Error analyzing ${fileDiff.fileName
+              .split("/")
+              .pop()}: ${fileError.message.substring(0, 100)}`,
+            "error"
+          );
+          // Optionally, decide if you want to continue with other files or stop.
+          // For now, we'll let it continue.
+        }
+      }
+
+      handleAnalysisResults(allSuggestions, allDiffData); // Pass original allDiffData for injection
     } catch (error) {
       console.error("Analysis error:", error);
       showNotification(
@@ -389,7 +436,10 @@
       );
     } finally {
       isAnalyzing = false;
-      updateButtonState(false);
+      updateButtonState(false); // This will reset icon and text
+      // If btnText was updated, ensure it's fully reset by updateButtonState
+      // If updateButtonState doesn't reset text correctly, uncomment below:
+      // if (btnText) btnText.textContent = originalBtnText;
     }
   }
 
@@ -621,15 +671,40 @@
   }
 
   // AI Call
-  async function analyzeCodeDiff(diffData, apiKey) {
-    const diffText = formatDiffForAnalysis(diffData);
+  async function analyzeCodeDiff(
+    diffDataForOneFile,
+    apiKey,
+    currentFileName = null
+  ) {
+    // Added currentFileName
+    const diffText = formatDiffForAnalysis(diffDataForOneFile); // This will now format only one file
+
+    // If the diffText for this single file is empty (e.g. only metadata changes, or empty file)
+    // you might want to skip the API call.
+    if (
+      !diffText.trim() ||
+      (diffText.includes("File: ") && diffText.split("\n").length < 3)
+    ) {
+      // Basic check for meaningful content
+      console.log(
+        `Skipping analysis for ${
+          currentFileName || "a file"
+        } as diff content is minimal.`
+      );
+      return []; // Return empty array, no suggestions
+    }
 
     const codingStandards = await getCodingStandards();
-
-    const prompt = createAnalysisPrompt(diffText, codingStandards);
     const modal = await getModals();
 
-    const selectedModel = modal || "models/gemini-2.0-flash-thinking-exp-01-21";
+    // Pass currentFileName to the prompt creation
+    const prompt = createAnalysisPrompt(
+      diffText,
+      codingStandards,
+      currentFileName
+    );
+
+    const selectedModel = modal || "models/gemini-2.0-flash-thinking-exp-01-21"; // Ensure you are using a model suitable for your needs
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${apiKey}`,
@@ -642,28 +717,83 @@
             temperature: 0.2,
             topK: 40,
             topP: 0.95,
-            maxOutputTokens: 4096,
+            maxOutputTokens: 4096, // This is for OUTPUT, input limit is often implicit or different
           },
         }),
       }
     );
 
     if (!response.ok) {
-      throw new Error(`API Error: ${response.status}`);
+      const errorBody = await response.text(); // Try to get more details from the error
+      console.error("API Error Body:", errorBody);
+      throw new Error(
+        `API Error: ${response.status} for ${
+          currentFileName || "a file"
+        }. ${errorBody.substring(0, 200)}`
+      );
     }
 
     const data = await response.json();
+
+    // Check for blocked prompt or other API issues
+    if (data.candidates === undefined || data.candidates.length === 0) {
+      if (data.promptFeedback && data.promptFeedback.blockReason) {
+        console.warn(
+          `Prompt blocked for ${currentFileName || "a file"}. Reason: ${
+            data.promptFeedback.blockReason
+          }`,
+          data.promptFeedback
+        );
+        throw new Error(
+          `AI analysis blocked for ${currentFileName || "a file"}: ${
+            data.promptFeedback.blockReason
+          }. This can be due to safety settings or harmful content.`
+        );
+      } else {
+        console.warn(
+          `No candidates returned from AI for ${
+            currentFileName || "a file"
+          }. Response:`,
+          data
+        );
+        throw new Error(
+          `No response from AI for ${
+            currentFileName || "a file"
+          }, please try again or check the model.`
+        );
+      }
+    }
+
     const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!responseText) {
-      throw new Error("No response from AI, please try again.");
+      // This case should ideally be caught by the candidates check above
+      throw new Error(
+        `No response text from AI for ${
+          currentFileName || "a file"
+        }, please try again.`
+      );
     }
 
-    return parseAIResponse(responseText);
+    return parseAIResponse(responseText, currentFileName); // Pass filename for context in parsing/error
   }
 
-  function createAnalysisPrompt(diffText, codingStandards = "") {
-    let prompt = `Please analyze this GitHub Pull Request diff and provide specific, actionable code review suggestions.`;
+  function createAnalysisPrompt(
+    diffText,
+    codingStandards = "",
+    fileName = null
+  ) {
+    // Added fileName
+    let promptIntro;
+    if (fileName) {
+      promptIntro = `Please analyze the following code changes for the file "${fileName
+        .split("/")
+        .pop()}" (full path: "${fileName}") and provide specific, actionable code review suggestions.`;
+    } else {
+      promptIntro = `Please analyze this GitHub Pull Request diff and provide specific, actionable code review suggestions.`;
+    }
+
+    let prompt = `${promptIntro}`;
 
     if (codingStandards.trim()) {
       prompt += `
@@ -671,72 +801,135 @@
   CODING STANDARDS TO FOLLOW:
   ${codingStandards}
   
-  Please ensure your suggestions align with these coding standards and conventions.`;
+  Please ensure your suggestions align with these coding standards and conventions for the file "${
+    fileName || "being analyzed"
+  }".`;
     }
 
     prompt += `
       
   Focus on:
-  1. Issues in NEW/ADDED code (lines with +)
-  2. Potential bugs and security concerns
-  3. Code quality improvements
-  4. Performance issues
-  5. Best practices violations
+  1. Issues in NEW/ADDED code (lines with +) within the file "${
+    fileName || "being analyzed"
+  }".
+  2. Potential bugs and security concerns.
+  3. Code quality improvements.
+  4. Performance issues.
+  5. Best practices violations.
   ${
     codingStandards.trim()
-      ? "6. Adherence to the provided coding standards"
+      ? `6. Adherence to the provided coding standards for "${
+          fileName || "this file"
+        }".`
       : ""
   }
   
-  Return ONLY a JSON array with this structure:
+  Return ONLY a JSON array with this structure (ensure lineNumber is relative to the file changes provided):
   [
   {
-  "id": "unique_id",
-  "fileName": "exact_file_name",
-  "lineNumber": line_number,
+  "id": "unique_id_for_this_suggestion",
+  "fileName": "${
+    fileName ? fileName.split("/").pop() : "exact_file_name_being_analyzed"
+  }", // AI should fill this with the correct file name provided
+  "lineNumber": line_number_within_the_diff_of_this_file, // Ensure this is the line number within the provided diff context
   "type": "bug|security|performance|style|maintainability|standards",
   "severity": "high|medium|low",
-  "title": "Brief issue title",
-  "description": "Detailed explanation",
-  "suggestedFix": "Specific code improvement",
-  "reasoning": "Why this change is needed"
+  "title": "Brief issue title (max 10 words)",
+  "description": "Detailed explanation of the issue (max 3-4 sentences)",
+  "suggestedFix": "Specific code improvement or detailed steps for fixing",
+  "reasoning": "Why this change is needed (1-2 sentences)"
   }
   ]
   
-  DIFF TO ANALYZE:
+  IMPORTANT:
+  - The "fileName" in the JSON output MUST exactly match "${
+    fileName ? fileName.split("/").pop() : "the file name being analyzed"
+  }". If the provided diff is for 'src/components/MyComponent.js', the JSON output for fileName should be 'MyComponent.js' or 'src/components/MyComponent.js'.
+  - The "lineNumber" MUST correspond to a line number present in the ADDED (prefixed with '+') lines of the diff for this specific file.
+  - If no issues are found for this specific file, return an empty array [].
+  - Do NOT include suggestions for unchanged or removed lines unless they directly relate to an issue in an added line.
+  - Be concise and actionable.
+
+  DIFF TO ANALYZE (for ${fileName || "the request"}):
   ${diffText}
   
-  Return only the JSON array, no other text.
+  Return only the JSON array, no other text, even if no suggestions are found (return [] in that case).
   `;
 
     return prompt;
   }
 
   function formatDiffForAnalysis(diffData) {
+    // diffData will now be an array with a single file's diff
     let result = "";
 
     diffData.forEach((file) => {
-      result += `\n--- File: ${file.fileName} ---\n`;
+      // This loop will run once
+      result += `\n--- File: ${file.fileName} ---\n`; // Use the full fileName here for context
 
-      file.lines.forEach((line) => {
-        const temp = line.type === "removed" ? "-" : " ";
+      let addedLinesPresent = false;
+      const fileLinesContent = file.lines
+        .map((line) => {
+          const prefix =
+            line.type === "added" ? "+" : line.type === "removed" ? "-" : " ";
+          if (line.type === "added") addedLinesPresent = true;
+          return `${prefix} ${String(line.lineNumber || "").padEnd(4)}: ${
+            line.content
+          }`;
+        })
+        .join("\n");
 
-        const prefix = line.type === "added" ? "+" : temp;
-        result += `${prefix} ${line.lineNumber || ""}: ${line.content}\n`;
-      });
+      if (!addedLinesPresent && file.lines.length > 0) {
+        // If there are lines but none are additions, it might be a file mode change, deletion, or just context.
+        // The AI might not have much to comment on, or the prompt instructs it to focus on added lines.
+        // For now, we send it, but this is a place for potential optimization if it causes issues.
+        result += fileLinesContent + "\n";
+      } else if (addedLinesPresent) {
+        result += fileLinesContent + "\n";
+      } else {
+        // No lines at all for this file in diffData (should not happen if extractDiffData is correct)
+        // Or, no added lines and no other lines. Effectively empty for review.
+        return ""; // Return empty string if no relevant content to analyze for this file
+      }
     });
 
     return result;
   }
 
-  function parseAIResponse(responseText) {
+  function parseAIResponse(responseText, fileNameContext = "current file") {
+    // Added context for errors
     try {
-      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
+      // The model should return JSON directly. If it's wrapped in markdown, attempt to extract.
+      let jsonString = responseText.trim();
+      if (jsonString.startsWith("```json")) {
+        jsonString = jsonString.substring(7);
+        if (jsonString.endsWith("```")) {
+          jsonString = jsonString.substring(0, jsonString.length - 3);
+        }
       }
+
+      const parsed = JSON.parse(jsonString);
+      if (!Array.isArray(parsed)) {
+        console.warn(
+          `AI response for ${fileNameContext} is not a JSON array:`,
+          parsed
+        );
+        return [];
+      }
+      return parsed;
     } catch (e) {
-      console.warn("Failed to parse AI response:", e.message);
+      console.warn(
+        `Failed to parse AI response for ${fileNameContext}:`,
+        e.message,
+        "Response was:",
+        responseText.substring(0, 500)
+      );
+      if (!responseText.trim().startsWith("[") && responseText.length < 300) {
+        showNotification(
+          `AI Error (${fileNameContext}): ${responseText.substring(0, 100)}`,
+          "warning"
+        );
+      }
     }
     return [];
   }
@@ -755,19 +948,49 @@
   }
 
   function findTargetFile(suggestion, diffData) {
-    return diffData.find(
-      (file) =>
-        file.fileName.includes(suggestion.fileName) ||
-        suggestion.fileName.includes(file.fileName)
-    );
+    return diffData.find((file) => {
+      // Check if suggestion.fileName (from AI) is part of file.fileName (from DOM)
+      // OR if file.fileName (from DOM) is part of suggestion.fileName (from AI)
+      // This handles cases where one is a full path and the other is just the basename.
+      const aiFileName = suggestion.fileName.toLowerCase();
+      const domFileName = file.fileName.toLowerCase();
+      return (
+        domFileName.includes(aiFileName) || aiFileName.includes(domFileName)
+      );
+    });
   }
 
   function findTargetLine(suggestion, targetFile) {
-    return targetFile.lines.find(
+    let foundLine = targetFile.lines.find(
       (line) =>
-        line.lineNumber === suggestion.lineNumber ||
-        Math.abs(line.lineNumber - suggestion.lineNumber) <= 2
+        line.type === "added" && line.lineNumber === suggestion.lineNumber
     );
+    if (foundLine) return foundLine;
+
+    const tolerance = 2;
+    let potentialLines = targetFile.lines.filter(
+      (line) => Math.abs(line.lineNumber - suggestion.lineNumber) <= tolerance
+    );
+
+    foundLine = potentialLines.find((line) => line.type === "added");
+    if (foundLine) return foundLine;
+
+    if (potentialLines.length > 0) {
+      potentialLines.sort(
+        (a, b) =>
+          Math.abs(a.lineNumber - suggestion.lineNumber) -
+          Math.abs(b.lineNumber - suggestion.lineNumber)
+      );
+      return potentialLines[0];
+    }
+
+    console.warn(
+      "Could not precisely find target line for suggestion:",
+      suggestion,
+      "in file:",
+      targetFile.fileName
+    );
+    return null;
   }
 
   function injectSuggestionAfterLine(rowElement, suggestion) {
