@@ -1,11 +1,23 @@
 document.addEventListener("DOMContentLoaded", function () {
   const ELEMENTS = {
+    // API Config elements
     form: document.getElementById("settingsForm"),
     apiKeyInput: document.getElementById("apiKey"),
     modelSelect: document.getElementById("modelSelect"),
     loadModelsBtn: document.getElementById("loadModelsBtn"),
     status: document.getElementById("status"),
     loadingSpinner: document.getElementById("loadingSpinner"),
+
+    // Coding Standards elements
+    codingStandardsForm: document.getElementById("codingStandardsForm"),
+    codingStandardsTextarea: document.getElementById("codingStandardsTextarea"),
+    charCount: document.getElementById("charCount"),
+    clearStandardsBtn: document.getElementById("clearStandardsBtn"),
+
+    // Tab elements
+    tabButtons: document.querySelectorAll(".tab-button"),
+    tabContents: document.querySelectorAll(".tab-content"),
+    templateButtons: document.querySelectorAll(".template-btn"),
   };
 
   const API_CONFIG = {
@@ -17,6 +29,7 @@ document.addEventListener("DOMContentLoaded", function () {
     storageKeys: {
       apiKey: "ai-review-api-key",
       selectedModel: "ai-review-selected-model",
+      codingStandards: "ai-review-coding-standards",
     },
   };
 
@@ -45,16 +58,392 @@ document.addEventListener("DOMContentLoaded", function () {
     },
   ];
 
+  // Coding Standards Templates
+  const CODING_STANDARDS_TEMPLATES = {
+    javascript: `JAVASCRIPT/REACT CODING STANDARDS:
+  
+  NAMING CONVENTIONS:
+  • Variables: camelCase (e.g., userName, isLoading, apiResponse)
+  • Functions: camelCase with verb prefix (e.g., getUserData, handleClick, validateForm)
+  • Components: PascalCase (e.g., UserProfile, NavBar, SearchInput)
+  • Constants: UPPER_SNAKE_CASE (e.g., API_BASE_URL, MAX_RETRY_COUNT)
+  • Files: kebab-case for regular files, PascalCase for components
+  
+  FUNCTION DECLARATIONS:
+  • Use function declarations instead of arrow functions for components
+  • Use arrow functions for event handlers and callbacks
+  • Keep functions under 20 lines when possible
+  • Use descriptive names that explain what the function does
+  
+  CODE ORGANIZATION:
+  • Group related functions together
+  • Keep components under 200 lines
+  • Use custom hooks for complex logic
+  • Separate business logic from UI logic
+  • Import order: external libraries → internal modules → relative imports
+  
+  REACT SPECIFIC:
+  • Use functional components with hooks
+  • Destructure props at the beginning of components
+  • Use PropTypes or TypeScript for type checking
+  • Avoid inline styles, use CSS modules or styled-components
+  • Use useCallback and useMemo for performance optimization
+  
+  ERROR HANDLING:
+  • Always handle async operations with try-catch
+  • Provide user-friendly error messages
+  • Log errors for debugging
+  • Use error boundaries for React components
+  
+  TESTING:
+  • Write unit tests for all utility functions
+  • Test components with React Testing Library
+  • Aim for 80%+ code coverage
+  • Use descriptive test names`,
+
+    typescript: `TYPESCRIPT CODING STANDARDS:
+  
+  TYPE DEFINITIONS:
+  • Use interfaces for object shapes
+  • Use type aliases for unions and primitives
+  • Prefer readonly for immutable data
+  • Use generic types for reusable components
+  • Define strict types, avoid 'any'
+  
+  NAMING CONVENTIONS:
+  • Types/Interfaces: PascalCase (e.g., UserData, ApiResponse)
+  • Enums: PascalCase with descriptive names
+  • Generic types: Single uppercase letter (T, K, V) or descriptive (TUser)
+  
+  STRICT MODE:
+  • Enable strict mode in tsconfig.json
+  • Use strictNullChecks and noImplicitAny
+  • Handle null and undefined explicitly
+  • Use optional chaining (?.) and nullish coalescing (??)
+  
+  FUNCTION SIGNATURES:
+  • Always specify return types for functions
+  • Use readonly for arrays that shouldn't be modified
+  • Prefer union types over enums when possible
+  • Use const assertions for literal types
+  
+  ERROR HANDLING:
+  • Use Result<T, E> pattern for error handling
+  • Define custom error types
+  • Use type guards for runtime type checking
+  • Validate external data with type guards
+  
+  IMPORTS/EXPORTS:
+  • Use named exports over default exports
+  • Group imports by type (types, values, side-effects)
+  • Use path mapping for cleaner imports
+  • Re-export from index files for public APIs
+  
+  CODE ORGANIZATION:
+  • Separate types into dedicated files
+  • Use barrel exports (index.ts files)
+  • Keep type definitions close to usage
+  • Use utility types (Pick, Omit, Partial) effectively`,
+
+    python: `PYTHON CODING STANDARDS:
+  
+  NAMING CONVENTIONS:
+  • Variables/Functions: snake_case (e.g., user_name, get_user_data)
+  • Classes: PascalCase (e.g., UserManager, DataProcessor)
+  • Constants: UPPER_SNAKE_CASE (e.g., API_BASE_URL, MAX_RETRIES)
+  • Private methods: prefix with underscore (_private_method)
+  • Modules: lowercase with underscores
+  
+  FUNCTION DEFINITIONS:
+  • Use type hints for all function parameters and return values
+  • Keep functions under 25 lines when possible
+  • Use docstrings for all public functions
+  • Follow Google or NumPy docstring style
+  
+  CODE ORGANIZATION:
+  • Follow PEP 8 style guide
+  • Maximum line length: 88 characters (Black formatter)
+  • Use imports in this order: standard library, third-party, local
+  • Group related functions in classes or modules
+  
+  ERROR HANDLING:
+  • Use specific exception types
+  • Don't catch bare except clauses
+  • Use context managers (with statements) for resource management
+  • Log exceptions with proper context
+  
+  DATA STRUCTURES:
+  • Use dataclasses for simple data containers
+  • Prefer list comprehensions over loops when readable
+  • Use generators for large datasets
+  • Type hint collections (List[str], Dict[str, int])
+  
+  TESTING:
+  • Use pytest for testing
+  • Follow AAA pattern (Arrange, Act, Assert)
+  • Use descriptive test function names
+  • Mock external dependencies
+  
+  SECURITY:
+  • Validate all user inputs
+  • Use parameterized queries for databases
+  • Don't hardcode secrets in code
+  • Use environment variables for configuration`,
+
+    java: `JAVA CODING STANDARDS:
+  
+  NAMING CONVENTIONS:
+  • Variables/Methods: camelCase (e.g., userName, getUserData)
+  • Classes: PascalCase (e.g., UserManager, DataProcessor)
+  • Constants: UPPER_SNAKE_CASE (e.g., API_BASE_URL, MAX_RETRIES)
+  • Packages: lowercase with dots (com.company.module)
+  
+  CLASS DESIGN:
+  • Keep classes focused on single responsibility
+  • Use interfaces to define contracts
+  • Prefer composition over inheritance
+  • Make fields private and use getters/setters
+  • Use builder pattern for complex objects
+  
+  METHOD DESIGN:
+  • Keep methods under 30 lines
+  • Use descriptive names that explain behavior
+  • Limit parameters to 3-4 maximum
+  • Return Optional<T> instead of null
+  • Use @Override annotation consistently
+  
+  CODE ORGANIZATION:
+  • Follow Google Java Style Guide
+  • Group related methods together
+  • Use meaningful package structure
+  • Keep public API minimal
+  
+  ERROR HANDLING:
+  • Use checked exceptions for recoverable errors
+  • Use unchecked exceptions for programming errors
+  • Always close resources with try-with-resources
+  • Provide meaningful error messages
+  • Log exceptions with proper levels
+  
+  CONCURRENCY:
+  • Use thread-safe collections when needed
+  • Prefer immutable objects
+  • Use java.util.concurrent utilities
+  • Avoid synchronized blocks when possible
+  
+  TESTING:
+  • Use JUnit 5 for unit testing
+  • Use Mockito for mocking dependencies
+  • Follow Given-When-Then pattern
+  • Test both happy path and edge cases
+  
+  DOCUMENTATION:
+  • Use Javadoc for all public methods
+  • Include @param and @return tags
+  • Document thread safety characteristics
+  • Provide usage examples for complex APIs`,
+
+    general: `GENERAL CODING STANDARDS:
+  
+  NAMING CONVENTIONS:
+  • Use descriptive and meaningful names
+  • Avoid abbreviations and single-letter variables (except loop counters)
+  • Use consistent naming patterns throughout the project
+  • Names should explain intent, not implementation
+  
+  CODE STRUCTURE:
+  • Keep functions/methods small and focused (single responsibility)
+  • Limit nesting levels (max 3-4 levels deep)
+  • Use consistent indentation (spaces or tabs, not mixed)
+  • Group related code together
+  • Separate concerns into different modules/files
+  
+  COMMENTS AND DOCUMENTATION:
+  • Write self-documenting code with clear names
+  • Comment the "why", not the "what"
+  • Keep comments up-to-date with code changes
+  • Document public APIs and complex algorithms
+  • Use TODO comments for future improvements
+  
+  ERROR HANDLING:
+  • Handle errors gracefully and consistently
+  • Provide meaningful error messages
+  • Don't ignore or suppress errors silently
+  • Use appropriate error handling patterns for your language
+  • Log errors with sufficient context for debugging
+  
+  PERFORMANCE:
+  • Avoid premature optimization
+  • Profile before optimizing
+  • Choose appropriate data structures
+  • Be mindful of memory usage
+  • Consider algorithmic complexity
+  
+  SECURITY:
+  • Validate all inputs from external sources
+  • Use parameterized queries for databases
+  • Don't hardcode sensitive information
+  • Follow principle of least privilege
+  • Keep dependencies up-to-date
+  
+  TESTING:
+  • Write tests for critical functionality
+  • Use descriptive test names
+  • Test edge cases and error conditions
+  • Keep tests independent and repeatable
+  • Maintain good test coverage
+  
+  VERSION CONTROL:
+  • Write clear, descriptive commit messages
+  • Make small, focused commits
+  • Use branching strategy consistently
+  • Review code before merging
+  • Keep commit history clean`,
+  };
+
   function init() {
     loadSettings();
     setupEventListeners();
     createTestButton();
     populateDefaultModels();
+    updateCharacterCount();
   }
 
   function setupEventListeners() {
+    // API Config listeners
     ELEMENTS.form.addEventListener("submit", handleFormSubmit);
     ELEMENTS.loadModelsBtn.addEventListener("click", handleLoadModels);
+
+    // Coding Standards listeners
+    ELEMENTS.codingStandardsForm.addEventListener(
+      "submit",
+      handleCodingStandardsSubmit
+    );
+    ELEMENTS.codingStandardsTextarea.addEventListener(
+      "input",
+      updateCharacterCount
+    );
+    ELEMENTS.clearStandardsBtn.addEventListener("click", clearCodingStandards);
+
+    // Tab listeners
+    ELEMENTS.tabButtons.forEach((button) => {
+      button.addEventListener("click", () => switchTab(button.dataset.tab));
+    });
+
+    // Template listeners
+    ELEMENTS.templateButtons.forEach((button) => {
+      button.addEventListener("click", () =>
+        loadTemplate(button.dataset.template)
+      );
+    });
+  }
+
+  function switchTab(tabId) {
+    // Update tab buttons
+    ELEMENTS.tabButtons.forEach((button) => {
+      button.classList.toggle("active", button.dataset.tab === tabId);
+    });
+
+    // Update tab contents
+    ELEMENTS.tabContents.forEach((content) => {
+      content.classList.toggle("active", content.id === tabId);
+    });
+  }
+
+  function loadTemplate(templateType) {
+    const template = CODING_STANDARDS_TEMPLATES[templateType];
+    if (template) {
+      const currentText = ELEMENTS.codingStandardsTextarea.value.trim();
+
+      if (
+        currentText &&
+        !confirm("This will replace your current coding standards. Continue?")
+      ) {
+        return;
+      }
+
+      ELEMENTS.codingStandardsTextarea.value = template;
+      updateCharacterCount();
+      showStatus(
+        `${
+          templateType.charAt(0).toUpperCase() + templateType.slice(1)
+        } template loaded!`,
+        STATUS_TYPES.SUCCESS
+      );
+    }
+  }
+
+  function updateCharacterCount() {
+    const text = ELEMENTS.codingStandardsTextarea.value;
+    const count = text.length;
+    ELEMENTS.charCount.textContent = count.toLocaleString();
+
+    // Add visual feedback for length
+    if (count > 5000) {
+      ELEMENTS.charCount.style.color = "#dc3545"; // Red
+    } else if (count > 3000) {
+      ELEMENTS.charCount.style.color = "#ffc107"; // Yellow
+    } else {
+      ELEMENTS.charCount.style.color = "#6c757d"; // Default gray
+    }
+  }
+
+  function clearCodingStandards() {
+    if (confirm("Are you sure you want to clear all coding standards?")) {
+      ELEMENTS.codingStandardsTextarea.value = "";
+      updateCharacterCount();
+      showStatus("Coding standards cleared", STATUS_TYPES.INFO);
+    }
+  }
+
+  function handleCodingStandardsSubmit(e) {
+    e.preventDefault();
+    saveCodingStandards();
+  }
+
+  function saveCodingStandards() {
+    const codingStandards = ELEMENTS.codingStandardsTextarea.value.trim();
+
+    const savePromises = [];
+
+    // Save to Chrome storage if available
+    if (hasChromeStorage()) {
+      savePromises.push(saveCodingStandardsToChromeStorage(codingStandards));
+    }
+
+    // Always save to localStorage as backup
+    localStorage.setItem(
+      API_CONFIG.storageKeys.codingStandards,
+      codingStandards
+    );
+
+    Promise.all(savePromises).then(() => {
+      if (codingStandards) {
+        showStatus(
+          "Coding standards saved successfully! They will be used in all code reviews.",
+          STATUS_TYPES.SUCCESS
+        );
+      } else {
+        showStatus(
+          "Coding standards cleared. Default review style will be used.",
+          STATUS_TYPES.INFO
+        );
+      }
+    });
+  }
+
+  function saveCodingStandardsToChromeStorage(codingStandards) {
+    return new Promise((resolve) => {
+      chrome.storage.sync.set(
+        { codingStandards: codingStandards },
+        function () {
+          if (chrome.runtime.lastError) {
+            console.warn("Chrome storage failed for coding standards");
+          }
+          resolve();
+        }
+      );
+    });
   }
 
   function handleFormSubmit(e) {
@@ -87,20 +476,28 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function loadFromChromeStorage() {
-    chrome.storage.sync.get(["apiKey", "selectedModel"], function (result) {
-      if (!chrome.runtime.lastError) {
-        if (result.apiKey) {
-          ELEMENTS.apiKeyInput.value = result.apiKey;
+    chrome.storage.sync.get(
+      ["apiKey", "selectedModel", "codingStandards"],
+      function (result) {
+        if (!chrome.runtime.lastError) {
+          if (result.apiKey) {
+            ELEMENTS.apiKeyInput.value = result.apiKey;
+          }
+          if (result.selectedModel) {
+            setSelectedModel(result.selectedModel);
+          }
+          if (result.codingStandards) {
+            ELEMENTS.codingStandardsTextarea.value = result.codingStandards;
+            updateCharacterCount();
+          }
         }
-        if (result.selectedModel) {
-          setSelectedModel(result.selectedModel);
-        }
-      }
 
-      if (!result.apiKey) {
-        loadFromLocalStorage();
+        // Fallback to localStorage if Chrome storage fails
+        if (!result.apiKey || !result.codingStandards) {
+          loadFromLocalStorage();
+        }
       }
-    });
+    );
   }
 
   function loadFromLocalStorage() {
@@ -108,12 +505,19 @@ document.addEventListener("DOMContentLoaded", function () {
     const localModel = localStorage.getItem(
       API_CONFIG.storageKeys.selectedModel
     );
+    const localStandards = localStorage.getItem(
+      API_CONFIG.storageKeys.codingStandards
+    );
 
     if (localKey) {
       ELEMENTS.apiKeyInput.value = localKey;
     }
     if (localModel) {
       setSelectedModel(localModel);
+    }
+    if (localStandards) {
+      ELEMENTS.codingStandardsTextarea.value = localStandards;
+      updateCharacterCount();
     }
   }
 
@@ -322,7 +726,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     Promise.all(savePromises).then(() => {
       showStatus(
-        "Settings saved successfully! You can now use the extension on GitHub PR pages.",
+        "API settings saved successfully! You can now use the extension on GitHub PR pages.",
         STATUS_TYPES.SUCCESS
       );
     });

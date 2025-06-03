@@ -43,6 +43,7 @@
     high: "#dc3545",
     medium: "#fd7e14",
     low: "#28a745",
+    standards: "#6f42c1",
     default: "#6c757d",
   };
 
@@ -597,10 +598,35 @@
     return null;
   }
 
+  function getCodingStandards() {
+    return new Promise((resolve) => {
+      try {
+        if (typeof chrome !== "undefined" && chrome.storage?.sync) {
+          chrome.storage.sync.get(["codingStandards"], (result) => {
+            if (chrome.runtime.lastError) {
+              console.warn("Storage error:", chrome.runtime.lastError);
+              resolve(localStorage.getItem("ai-review-coding-standards") || "");
+            } else {
+              resolve(result.codingStandards || "");
+            }
+          });
+        } else {
+          resolve(localStorage.getItem("ai-review-coding-standards") || "");
+        }
+      } catch (error) {
+        console.warn("Storage access failed:", error);
+        resolve(localStorage.getItem("ai-review-coding-standards") || "");
+      }
+    });
+  }
+
   // AI Call
   async function analyzeCodeDiff(diffData, apiKey) {
     const diffText = formatDiffForAnalysis(diffData);
-    const prompt = createAnalysisPrompt(diffText);
+
+    const codingStandards = await getCodingStandards();
+
+    const prompt = createAnalysisPrompt(diffText, codingStandards);
     const modal = await getModals();
 
     const selectedModel = modal || "models/gemini-2.0-flash-thinking-exp-01-21";
@@ -636,37 +662,54 @@
     return parseAIResponse(responseText);
   }
 
-  function createAnalysisPrompt(diffText) {
-    return `
-    Please analyze this GitHub Pull Request diff and provide specific, actionable code review suggestions.
-    
-    Focus on:
-    1. Issues in NEW/ADDED code (lines with +)
-    2. Potential bugs and security concerns
-    3. Code quality improvements
-    4. Performance issues
-    5. Best practices violations
-    
-    Return ONLY a JSON array with this structure:
-    [
-    {
-    "id": "unique_id",
-    "fileName": "exact_file_name",
-    "lineNumber": line_number,
-    "type": "bug|security|performance|style|maintainability",
-    "severity": "high|medium|low",
-    "title": "Brief issue title",
-    "description": "Detailed explanation",
-    "suggestedFix": "Specific code improvement",
-    "reasoning": "Why this change is needed"
+  function createAnalysisPrompt(diffText, codingStandards = "") {
+    let prompt = `Please analyze this GitHub Pull Request diff and provide specific, actionable code review suggestions.`;
+
+    if (codingStandards.trim()) {
+      prompt += `
+  
+  CODING STANDARDS TO FOLLOW:
+  ${codingStandards}
+  
+  Please ensure your suggestions align with these coding standards and conventions.`;
     }
-    ]
-    
-    DIFF TO ANALYZE:
-    ${diffText}
-    
-    Return only the JSON array, no other text.
-    `;
+
+    prompt += `
+      
+  Focus on:
+  1. Issues in NEW/ADDED code (lines with +)
+  2. Potential bugs and security concerns
+  3. Code quality improvements
+  4. Performance issues
+  5. Best practices violations
+  ${
+    codingStandards.trim()
+      ? "6. Adherence to the provided coding standards"
+      : ""
+  }
+  
+  Return ONLY a JSON array with this structure:
+  [
+  {
+  "id": "unique_id",
+  "fileName": "exact_file_name",
+  "lineNumber": line_number,
+  "type": "bug|security|performance|style|maintainability|standards",
+  "severity": "high|medium|low",
+  "title": "Brief issue title",
+  "description": "Detailed explanation",
+  "suggestedFix": "Specific code improvement",
+  "reasoning": "Why this change is needed"
+  }
+  ]
+  
+  DIFF TO ANALYZE:
+  ${diffText}
+  
+  Return only the JSON array, no other text.
+  `;
+
+    return prompt;
   }
 
   function formatDiffForAnalysis(diffData) {
