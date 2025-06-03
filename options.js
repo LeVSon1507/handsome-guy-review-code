@@ -41,10 +41,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
   const DEFAULT_MODELS = [
     {
-      name: "models/gemini-2.5-pro-exp-03-25",
-      displayName: "Gemini 2.5 Pro Exp (Recommended)",
-      description:
-        "Latest experimental version with enhanced code understanding",
+      name: "models/gemini-2.0-flash-lite-preview",
+      displayName: "Gemini 2.0 Flash Lite Preview",
+      description: "Faster responses, good for quick reviews",
     },
     {
       name: "models/gemini-1.5-pro-latest",
@@ -52,9 +51,10 @@ document.addEventListener("DOMContentLoaded", function () {
       description: "Stable version with excellent code analysis",
     },
     {
-      name: "models/gemini-1.5-flash-latest",
-      displayName: "Gemini 1.5 Flash Latest",
-      description: "Faster responses, good for quick reviews",
+      name: "models/gemini-2.5-pro-exp-03-25",
+      displayName: "Gemini 2.5 Pro Exp (Recommended)",
+      description:
+        "Latest experimental version with enhanced code understanding",
     },
   ];
 

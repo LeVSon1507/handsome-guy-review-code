@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "AI Code Review Assistant",
-  "version": "1.0.0",
+  "name": "Handsome Guy Code Review Assistant",
+  "short_name": "AI Review",
+  "version": "1.0.1",
   "description": "AI-powered code review assistant for GitHub Pull Requests with Google Gemini integration",
 
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage"],
 
   "host_permissions": [
     "https://github.com/*",
@@ -15,6 +16,7 @@
     {
       "matches": ["https://github.com/*"],
       "js": ["content-script.js"],
+      "css": ["content-style.css"],
       "run_at": "document_end"
     }
   ],

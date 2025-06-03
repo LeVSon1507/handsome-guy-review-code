@@ -2,110 +2,105 @@
   "use strict";
 
   const SELECTORS = {
-    file: [
-      '[data-testid="file-diff-view"]',
-      '[data-testid="file-header"]',
-      "[data-tagsearch-path]",
-      ".file.js-file",
-      ".file-diff-split",
-      ".file-diff-unified",
-      "[data-path]",
-    ],
+    file: ['[data-testid="file-diff-view"]', ".file", ".js-file", ".diff-view"],
     fileName: [
-      '[data-testid="file-header"] [data-testid="file-name"]',
-      '[data-testid="file-header"] .Link--primary',
-      "[data-tagsearch-path]",
-      "[data-path]",
-      ".file-header [title]",
-      ".file-info a[title]",
+      ".file-header [data-path]",
+      ".file-info a",
+      ".js-file-header [data-path]",
     ],
     diffRows: [
-      '[data-testid="file-diff-view"] tr',
-      "tr[data-hunk]",
-      "tr:has(.blob-code)",
-      ".react-code-text",
-      "tr.blob-code-hunk",
+      ".diff-table tr:not(.js-expandable-line)",
+      ".js-diff-table tr",
+      '[data-testid="diff-row"]',
     ],
     addedLines: [
       ".blob-code-addition",
-      '[data-code-marker="+"]',
-      '.react-code-text[data-code-marker="+"]',
+      ".diff-table td.d-addition",
+      '[data-testid="diff-row-addition"]',
     ],
     removedLines: [
       ".blob-code-deletion",
-      '[data-code-marker="-"]',
-      '.react-code-text[data-code-marker="-"]',
+      ".diff-table td.d-deletion",
+      '[data-testid="diff-row-deletion"]',
     ],
-    codeContent: [".blob-code-inner", ".react-code-text", ".blob-code"],
+    codeContent: [
+      ".blob-code",
+      ".diff-table td:last-child",
+      '[data-testid="diff-content"]',
+    ],
   };
 
   const SEVERITY_COLORS = {
     high: "#dc3545",
-    medium: "#fd7e14",
+    medium: "#ffc107",
     low: "#28a745",
-    standards: "#6f42c1",
     default: "#6c757d",
   };
 
   const NOTIFICATION_COLORS = {
-    error: "#dc3545",
-    warning: "#fd7e14",
     success: "#28a745",
+    warning: "#ffc107",
+    error: "#dc3545",
+    info: "#17a2b8",
+  };
+
+  const CONFIG = {
+    chunkSize: 500,
+    largeFileSizeThreshold: 50000,
+    maxConcurrentRequests: 3,
+    apiRequestDelay: 500,
+    initializationDelay: 1000,
+    navigationObserverDelay: 500,
+    notificationDuration: 5000,
+    progressBarHideDuration: 2000,
   };
 
   // State
   let isAnalyzing = false;
   let floatingButton = null;
   let navigationButtons = null;
+  let fileSelector = null;
   let currentSuggestionIndex = 0;
   let totalSuggestions = 0;
+  let selectedFiles = new Set();
+  let completedApiCalls = 0;
 
   // Storage utilities
   function getApiKey() {
-    return new Promise((resolve) => {
-      try {
-        if (typeof chrome !== "undefined" && chrome.storage?.sync) {
-          chrome.storage.sync.get(["apiKey"], (result) => {
-            if (chrome.runtime.lastError) {
-              console.warn("Storage error:", chrome.runtime.lastError);
-              resolve(localStorage.getItem("ai-review-api-key") || null);
-            } else {
-              resolve(result.apiKey || null);
-            }
-          });
-        } else {
-          resolve(localStorage.getItem("ai-review-api-key") || null);
-        }
-      } catch (error) {
-        console.warn("Storage access failed:", error);
-        resolve(localStorage.getItem("ai-review-api-key") || null);
-      }
-    });
+    return getStorageItem("apiKey", "ai-review-api-key");
   }
 
   function getModals() {
+    return getStorageItem("selectedModel", "ai-review-selected-model");
+  }
+
+  function getCodingStandards() {
+    return getStorageItem("codingStandards", "ai-review-coding-standards", "");
+  }
+
+  function getStorageItem(chromeKey, localStorageKey, defaultValue = null) {
     return new Promise((resolve) => {
       try {
         if (typeof chrome !== "undefined" && chrome.storage?.sync) {
-          chrome.storage.sync.get(["selectedModel"], (result) => {
+          chrome.storage.sync.get([chromeKey], (result) => {
             if (chrome.runtime.lastError) {
               console.warn("Storage error:", chrome.runtime.lastError);
-              resolve(localStorage.getItem("ai-review-selected-model") || null);
+              resolve(localStorage.getItem(localStorageKey) || defaultValue);
             } else {
-              resolve(result.selectedModel || null);
+              resolve(result[chromeKey] || defaultValue);
             }
           });
         } else {
-          resolve(localStorage.getItem("ai-review-selected-model") || null);
+          resolve(localStorage.getItem(localStorageKey) || defaultValue);
         }
       } catch (error) {
         console.warn("Storage access failed:", error);
-        resolve(localStorage.getItem("ai-review-selected-model") || null);
+        resolve(localStorage.getItem(localStorageKey) || defaultValue);
       }
     });
   }
 
-  // Dark mode detection
+  // Utility functions
   function isDarkMode() {
     return (
       document.documentElement.getAttribute("data-color-mode") === "dark" ||
@@ -115,29 +110,338 @@
     );
   }
 
-  // UI Components
-  function createFloatingButton() {
-    if (floatingButton) {
-      floatingButton.remove();
+  function getDisplayFileName(fullPath) {
+    if (!fullPath) return "Unknown file";
+    const parts = fullPath.split("/");
+    return parts.length > 1
+      ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}`
+      : parts[0];
+  }
+
+  function promiseAllInBatches(tasks, batchSize) {
+    let results = [];
+    let currentBatch = [];
+    let index = 0;
+
+    async function processBatch() {
+      if (index >= tasks.length) {
+        if (currentBatch.length === 0) return results;
+
+        const batchResults = await Promise.all(currentBatch);
+        results = results.concat(batchResults);
+        return results;
+      }
+
+      while (currentBatch.length < batchSize && index < tasks.length) {
+        currentBatch.push(tasks[index++]);
+      }
+
+      const batchResults = await Promise.all(currentBatch);
+      results = results.concat(batchResults);
+      currentBatch = [];
+
+      return processBatch();
     }
 
-    floatingButton = document.createElement("div");
-    floatingButton.id = "code-review-assistant-btn";
+    return processBatch();
+  }
 
-    const buttonInner = document.createElement("div");
-    buttonInner.style.cssText = getButtonStyles();
+  function chunkLines(lines, chunkSize) {
+    const chunks = [];
+    for (let i = 0; i < lines.length; i += chunkSize) {
+      chunks.push(lines.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
 
-    const icon = createButtonIcon();
-    const text = createButtonText();
+  // UI Components
+  function createFileSelector() {
+    if (fileSelector) {
+      fileSelector.remove();
+    }
 
-    buttonInner.appendChild(icon);
-    buttonInner.appendChild(text);
-    floatingButton.appendChild(buttonInner);
+    fileSelector = document.createElement("div");
+    fileSelector.id = "file-selector-modal";
+    fileSelector.className = "file-selector-modal font-base";
 
-    addButtonEventListeners(buttonInner);
-    document.body.appendChild(floatingButton);
+    const modal = createFileSelectorModal();
+    fileSelector.appendChild(modal);
 
-    return floatingButton;
+    fileSelector.addEventListener("click", (e) => {
+      if (e.target === fileSelector) {
+        hideFileSelector();
+      }
+    });
+
+    document.body.appendChild(fileSelector);
+    return fileSelector;
+  }
+
+  function createFileSelectorModal() {
+    const darkMode = isDarkMode();
+    const modal = document.createElement("div");
+    modal.className = `modal-container ${darkMode ? "dark" : "light"}`;
+
+    const header = createModalHeader();
+    const fileList = createFileList();
+    const footer = createModalFooter();
+
+    modal.appendChild(header);
+    modal.appendChild(fileList);
+    modal.appendChild(footer);
+
+    return modal;
+  }
+
+  function createModalHeader() {
+    const darkMode = isDarkMode();
+    const header = document.createElement("div");
+    header.className = `modal-header ${darkMode ? "dark" : "light"}`;
+
+    const title = document.createElement("h3");
+    title.className = `modal-title ${darkMode ? "dark" : "light"}`;
+    title.textContent = "🔍 Select Files to Review";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = `modal-close-btn ${darkMode ? "dark" : "light"}`;
+    closeBtn.innerHTML = "✕";
+    closeBtn.addEventListener("click", hideFileSelector);
+
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+
+    return header;
+  }
+
+  function createFileList() {
+    const darkMode = isDarkMode();
+    const container = document.createElement("div");
+    container.className = "file-list-container";
+
+    const selectAllContainer = createSelectAllOption();
+    container.appendChild(selectAllContainer);
+
+    const allDiffData = extractDiffData();
+
+    if (allDiffData.length === 0) {
+      const noFiles = document.createElement("div");
+      noFiles.className = `no-files ${darkMode ? "dark" : "light"}`;
+      noFiles.textContent = "No files found to review";
+      container.appendChild(noFiles);
+      return container;
+    }
+
+    allDiffData.forEach((file, index) => {
+      const fileItem = createFileItem(file, index);
+      container.appendChild(fileItem);
+    });
+
+    return container;
+  }
+
+  function createSelectAllOption() {
+    const darkMode = isDarkMode();
+    const container = document.createElement("div");
+    container.className = `select-all-container ${darkMode ? "dark" : "light"}`;
+
+    const label = document.createElement("label");
+    label.className = `select-all-label ${darkMode ? "dark" : "light"}`;
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.id = "select-all-files";
+    checkbox.className = "select-all-checkbox";
+
+    checkbox.addEventListener("change", function () {
+      const allCheckboxes = document.querySelectorAll(".file-checkbox");
+      const allDiffData = extractDiffData();
+
+      if (this.checked) {
+        selectedFiles.clear();
+        allDiffData.forEach((file, index) => {
+          selectedFiles.add(index);
+        });
+        allCheckboxes.forEach((cb) => (cb.checked = true));
+      } else {
+        selectedFiles.clear();
+        allCheckboxes.forEach((cb) => (cb.checked = false));
+      }
+
+      updateStartButtonState();
+    });
+
+    const text = document.createElement("span");
+    text.textContent = "Select All Files";
+
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    container.appendChild(label);
+
+    return container;
+  }
+
+  function createFileItem(file, index) {
+    const darkMode = isDarkMode();
+    const item = document.createElement("div");
+    item.className = `file-item ${darkMode ? "dark" : "light"}`;
+
+    const label = document.createElement("label");
+    label.className = "file-label";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "file-checkbox";
+    checkbox.value = index;
+
+    // Check if file was previously selected
+    if (selectedFiles.has(index)) {
+      checkbox.checked = true;
+      item.classList.add("selected");
+    }
+
+    checkbox.addEventListener("change", function () {
+      if (this.checked) {
+        selectedFiles.add(index);
+        item.classList.add("selected");
+      } else {
+        selectedFiles.delete(index);
+        item.classList.remove("selected");
+      }
+
+      // Update select all checkbox
+      const selectAllCheckbox = document.getElementById("select-all-files");
+      const allCheckboxes = document.querySelectorAll(".file-checkbox");
+      const checkedBoxes = document.querySelectorAll(".file-checkbox:checked");
+      selectAllCheckbox.checked = checkedBoxes.length === allCheckboxes.length;
+
+      updateStartButtonState();
+    });
+
+    const fileInfo = document.createElement("div");
+    fileInfo.className = "file-info";
+
+    const fileName = document.createElement("div");
+    fileName.className = `file-name ${darkMode ? "dark" : "light"}`;
+    fileName.textContent = getDisplayFileName(file.fileName);
+
+    const fileStats = document.createElement("div");
+    fileStats.className = `file-stats ${darkMode ? "dark" : "light"}`;
+
+    const addedLines = file.lines.filter(
+      (line) => line.type === "added"
+    ).length;
+    const removedLines = file.lines.filter(
+      (line) => line.type === "removed"
+    ).length;
+
+    fileStats.innerHTML = `
+      <span class="added-lines">+${addedLines}</span>
+      <span class="removed-lines">-${removedLines}</span>
+      <span>${file.lines.length} total lines</span>
+    `;
+
+    fileInfo.appendChild(fileName);
+    fileInfo.appendChild(fileStats);
+
+    label.appendChild(checkbox);
+    label.appendChild(fileInfo);
+    item.appendChild(label);
+
+    // Click on item to toggle checkbox
+    item.addEventListener("click", function (e) {
+      if (e.target !== checkbox) {
+        checkbox.click();
+      }
+    });
+
+    return item;
+  }
+
+  function createModalFooter() {
+    const darkMode = isDarkMode();
+    const footer = document.createElement("div");
+    footer.className = `modal-footer ${darkMode ? "dark" : "light"}`;
+
+    const selectedCount = document.createElement("div");
+    selectedCount.id = "selected-count";
+    selectedCount.className = `selected-count ${darkMode ? "dark" : "light"}`;
+
+    const buttonGroup = document.createElement("div");
+    buttonGroup.className = "button-group";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = `btn btn-cancel ${darkMode ? "dark" : "light"}`;
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", hideFileSelector);
+
+    const startBtn = document.createElement("button");
+    startBtn.id = "start-review-btn";
+    startBtn.className = "btn btn-start";
+    startBtn.textContent = "🚀 Start Review";
+    startBtn.disabled = true;
+    startBtn.addEventListener("click", startSelectedReview);
+
+    buttonGroup.appendChild(cancelBtn);
+    buttonGroup.appendChild(startBtn);
+
+    footer.appendChild(selectedCount);
+    footer.appendChild(buttonGroup);
+
+    updateStartButtonState();
+
+    return footer;
+  }
+
+  function updateStartButtonState() {
+    const startBtn = document.getElementById("start-review-btn");
+    const selectedCount = document.getElementById("selected-count");
+
+    if (!startBtn || !selectedCount) return;
+
+    const count = selectedFiles.size;
+    selectedCount.textContent = `${count} file${
+      count !== 1 ? "s" : ""
+    } selected`;
+
+    if (count > 0) {
+      startBtn.disabled = false;
+      startBtn.style.opacity = "1";
+      startBtn.style.cursor = "pointer";
+    } else {
+      startBtn.disabled = true;
+      startBtn.style.opacity = "0.5";
+      startBtn.style.cursor = "not-allowed";
+    }
+  }
+
+  function showFileSelector() {
+    if (!fileSelector) {
+      createFileSelector();
+    }
+    fileSelector.style.display = "flex";
+
+    setTimeout(() => {
+      const checkboxes = document.querySelectorAll(".file-checkbox");
+      const allDiffData = extractDiffData();
+
+      allDiffData.forEach((_, index) => {
+        selectedFiles.add(index);
+      });
+
+      checkboxes.forEach((cb) => (cb.checked = true));
+      const selectAllCheckbox = document.getElementById("select-all-files");
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked = true;
+      }
+
+      updateStartButtonState();
+    }, 50);
+  }
+
+  function hideFileSelector() {
+    if (fileSelector) {
+      fileSelector.style.display = "none";
+    }
   }
 
   function createNavigationButtons() {
@@ -147,15 +451,7 @@
 
     navigationButtons = document.createElement("div");
     navigationButtons.id = "suggestion-navigation";
-    navigationButtons.style.cssText = `
-      position: fixed;
-      top: 130px;
-      right: 20px;
-      z-index: 9999;
-      display: none;
-      flex-direction: column;
-      gap: 5px;
-    `;
+    navigationButtons.className = "suggestion-navigation";
 
     const prevButton = createNavButton("↑", "Previous suggestion", () =>
       navigateToSuggestion(-1)
@@ -175,54 +471,150 @@
 
   function createNavButton(text, title, onClick) {
     const button = document.createElement("button");
-    button.style.cssText = `
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border: none;
-      width: 30px;
-      height: 30px;
-      border-radius: 15px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: bold;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    `;
+    button.className = "nav-button";
     button.textContent = text;
     button.title = title;
     button.addEventListener("click", onClick);
-
-    button.addEventListener("mouseenter", function () {
-      this.style.transform = "scale(1.1)";
-      this.style.boxShadow = "0 4px 12px rgba(0,0,0,0.2)";
-    });
-
-    button.addEventListener("mouseleave", function () {
-      this.style.transform = "scale(1)";
-      this.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
-    });
-
     return button;
   }
 
   function createSuggestionCounter() {
     const counter = document.createElement("div");
     counter.id = "suggestion-counter";
-    counter.style.cssText = `
-      background: rgba(102, 126, 234, 0.9);
-      color: white;
-      padding: 4px 8px;
-      border-radius: 10px;
-      font-size: 11px;
-      font-weight: 500;
-      text-align: center;
-      min-width: 30px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
+    counter.className = "suggestion-counter font-base";
     return counter;
+  }
+
+  function createFloatingButton() {
+    if (floatingButton) {
+      floatingButton.remove();
+    }
+
+    floatingButton = document.createElement("div");
+    floatingButton.id = "code-review-assistant-btn";
+
+    const buttonInner = document.createElement("div");
+    buttonInner.className = "floating-button font-base";
+
+    const icon = document.createElement("span");
+    icon.id = "btn-icon";
+    icon.textContent = "🔍";
+
+    const text = document.createElement("span");
+    text.id = "btn-text";
+    text.textContent = "AI Review";
+
+    buttonInner.appendChild(icon);
+    buttonInner.appendChild(text);
+    floatingButton.appendChild(buttonInner);
+
+    buttonInner.addEventListener("click", function () {
+      if (isAnalyzing) return;
+
+      const allDiffData = extractDiffData();
+      if (!allDiffData || allDiffData.length === 0) {
+        showNotification("No code changes found to analyze", "warning");
+        return;
+      }
+
+      showFileSelector();
+    });
+
+    document.body.appendChild(floatingButton);
+    return floatingButton;
+  }
+
+  function createProgressBar() {
+    const existingProgressBar = document.getElementById(
+      "analysis-progress-container"
+    );
+    if (existingProgressBar) {
+      existingProgressBar.remove();
+    }
+
+    const darkMode = isDarkMode();
+    const progressContainer = document.createElement("div");
+    progressContainer.id = "analysis-progress-container";
+    progressContainer.className = `progress-container ${
+      darkMode ? "dark" : "light"
+    } font-base`;
+
+    const progressTitle = document.createElement("div");
+    progressTitle.className = `progress-title ${darkMode ? "dark" : "light"}`;
+    progressTitle.textContent = "Analyzing files...";
+
+    const progressBarOuter = document.createElement("div");
+    progressBarOuter.className = `progress-bar-outer ${
+      darkMode ? "dark" : "light"
+    }`;
+
+    const progressBarInner = document.createElement("div");
+    progressBarInner.id = "analysis-progress-bar";
+    progressBarInner.className = "progress-bar-inner";
+
+    const progressText = document.createElement("div");
+    progressText.id = "analysis-progress-text";
+    progressText.className = `progress-text ${darkMode ? "dark" : "light"}`;
+    progressText.textContent = "0%";
+
+    const apiCallsInfo = document.createElement("div");
+    apiCallsInfo.id = "api-calls-info";
+    apiCallsInfo.className = `api-calls-info ${darkMode ? "dark" : "light"}`;
+    apiCallsInfo.style.cssText =
+      "font-size: 12px; margin-top: 4px; color: #666;";
+
+    progressBarOuter.appendChild(progressBarInner);
+    progressContainer.appendChild(progressTitle);
+    progressContainer.appendChild(progressBarOuter);
+    progressContainer.appendChild(progressText);
+    progressContainer.appendChild(apiCallsInfo);
+
+    document.body.appendChild(progressContainer);
+    return progressContainer;
+  }
+
+  function updateProgressBar(current, total, text = null, apiCalls = null) {
+    const progressContainer = document.getElementById(
+      "analysis-progress-container"
+    );
+    const progressBar = document.getElementById("analysis-progress-bar");
+    const progressText = document.getElementById("analysis-progress-text");
+    const apiCallsInfo = document.getElementById("api-calls-info");
+
+    if (!progressContainer || !progressBar || !progressText) return;
+
+    const percent = Math.round((current / total) * 100);
+
+    if (percent !== progressBar.dataset.lastPercent) {
+      progressBar.style.width = `${percent}%`;
+      progressBar.dataset.lastPercent = percent;
+      progressText.textContent = text || `${percent}% (${current}/${total})`;
+    }
+
+    if (apiCallsInfo && apiCalls !== null) {
+      apiCallsInfo.textContent = `API Calls completed: ${apiCalls}`;
+    }
+
+    if (current >= total) {
+      setTimeout(() => {
+        progressContainer.style.display = "none";
+      }, CONFIG.progressBarHideDuration);
+    }
+  }
+
+  function updateButtonState(isLoading) {
+    const btnIcon = document.getElementById("btn-icon");
+    const btnText = document.getElementById("btn-text");
+
+    if (!btnIcon || !btnText) return;
+
+    if (isLoading) {
+      btnIcon.textContent = "⏳";
+      btnText.textContent = "Analyzing...";
+    } else {
+      btnIcon.textContent = "🔍";
+      btnText.textContent = "AI Review";
+    }
   }
 
   function updateSuggestionCounter() {
@@ -287,182 +679,28 @@
     }
   }
 
-  function getButtonStyles() {
-    return `
-        position: fixed;
-        top: 80px;
-        right: 20px;
-        z-index: 9999;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 10px 14px;
-        border-radius: 20px;
-        cursor: pointer;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 13px;
-        font-weight: 500;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        transition: all 0.2s;
-        user-select: none;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-width: 120px;
-        justify-content: center;
-      `;
+  function clearPreviousSuggestions() {
+    document
+      .querySelectorAll(".ai-suggestion-row")
+      .forEach((row) => row.remove());
+
+    currentSuggestionIndex = 0;
+    totalSuggestions = 0;
+    hideNavigationButtons();
   }
 
-  function createButtonIcon() {
-    const icon = document.createElement("span");
-    icon.id = "btn-icon";
-    icon.textContent = "🔍";
-    return icon;
+  function showNotification(message, type) {
+    const notification = document.createElement("div");
+    notification.className = `notification ${type} font-base`;
+    notification.style.background =
+      NOTIFICATION_COLORS[type] || NOTIFICATION_COLORS.success;
+    notification.textContent = message;
+
+    document.body.appendChild(notification);
+    setTimeout(() => notification.remove(), CONFIG.notificationDuration);
   }
 
-  function createButtonText() {
-    const text = document.createElement("span");
-    text.id = "btn-text";
-    text.textContent = "AI Review";
-    return text;
-  }
-
-  function addButtonEventListeners(buttonInner) {
-    buttonInner.addEventListener("mouseenter", function () {
-      this.style.transform = "translateY(-1px)";
-      this.style.boxShadow = "0 4px 12px rgba(0,0,0,0.2)";
-    });
-
-    buttonInner.addEventListener("mouseleave", function () {
-      this.style.transform = "translateY(0)";
-      this.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
-    });
-
-    buttonInner.addEventListener("click", handleAnalyzeClick);
-  }
-
-  function updateButtonState(isLoading) {
-    const btnIcon = document.getElementById("btn-icon");
-    const btnText = document.getElementById("btn-text");
-
-    if (isLoading) {
-      btnIcon.textContent = "⏳";
-      btnText.textContent = "Analyzing...";
-    } else {
-      btnIcon.textContent = "🔍";
-      btnText.textContent = "AI Review";
-    }
-  }
-
-  // main func
-  async function handleAnalyzeClick() {
-    if (isAnalyzing) return;
-
-    try {
-      isAnalyzing = true;
-      updateButtonState(true); // Keep this for overall state
-      clearPreviousSuggestions();
-      hideNavigationButtons();
-
-      const allDiffData = extractDiffData(); // Get all file diffs
-      if (!allDiffData || allDiffData.length === 0) {
-        showNotification("No code changes found to analyze", "warning");
-        // Ensure isAnalyzing is reset before returning
-        isAnalyzing = false;
-        updateButtonState(false);
-        return;
-      }
-
-      const apiKey = await getApiKey();
-      if (!apiKey) {
-        showNotification(
-          "Please configure API key in extension options",
-          "error"
-        );
-        openOptionsPage();
-        // Ensure isAnalyzing is reset before returning
-        isAnalyzing = false;
-        updateButtonState(false);
-        return;
-      }
-
-      let allSuggestions = [];
-      const totalFiles = allDiffData.length;
-      let filesProcessed = 0;
-
-      // Get the button text element once
-      const btnText = document.getElementById("btn-text");
-      const originalBtnText = btnText ? btnText.textContent : "AI Review"; // Store original text
-
-      for (const fileDiff of allDiffData) {
-        filesProcessed++;
-        if (btnText) {
-          // Update button text to show progress
-          btnText.textContent = `Analyzing ${filesProcessed}/${totalFiles}...`;
-        }
-
-        try {
-          // Pass only ONE file's diff data, wrapped in an array,
-          // and the specific file name for better prompt context.
-          const suggestionsForFile = await analyzeCodeDiff(
-            [fileDiff],
-            apiKey,
-            fileDiff.fileName
-          );
-          if (suggestionsForFile && suggestionsForFile.length > 0) {
-            allSuggestions.push(...suggestionsForFile);
-          }
-        } catch (fileError) {
-          console.error(
-            `Error analyzing file ${fileDiff.fileName}:`,
-            fileError
-          );
-          showNotification(
-            `Error analyzing ${fileDiff.fileName
-              .split("/")
-              .pop()}: ${fileError.message.substring(0, 100)}`,
-            "error"
-          );
-          // Optionally, decide if you want to continue with other files or stop.
-          // For now, we'll let it continue.
-        }
-      }
-
-      handleAnalysisResults(allSuggestions, allDiffData); // Pass original allDiffData for injection
-    } catch (error) {
-      console.error("Analysis error:", error);
-      showNotification(
-        "Analysis failed: " + error.message + " try again",
-        "error"
-      );
-    } finally {
-      isAnalyzing = false;
-      updateButtonState(false); // This will reset icon and text
-      // If btnText was updated, ensure it's fully reset by updateButtonState
-      // If updateButtonState doesn't reset text correctly, uncomment below:
-      // if (btnText) btnText.textContent = originalBtnText;
-    }
-  }
-
-  function openOptionsPage() {
-    try {
-      chrome.runtime.sendMessage({ action: "openOptions" });
-    } catch (e) {
-      console.warn("Could not open options:", e);
-    }
-  }
-
-  function handleAnalysisResults(suggestions, diffData) {
-    if (suggestions && suggestions.length > 0) {
-      injectSuggestions(suggestions, diffData);
-      showNavigationButtons();
-      showNotification(`Found ${suggestions.length} suggestions`, "success");
-    } else {
-      hideNavigationButtons();
-      showNotification("No issues found. Code looks good!", "success");
-    }
-  }
-
-  // diff extract
+  // Diff extraction functions
   function extractDiffData() {
     const fileContainers = findFileContainers();
     const diffData = [];
@@ -491,7 +729,6 @@
       }
     }
 
-    // fallback
     const tables = document.querySelectorAll(
       "table.diff-table, .js-diff-table, table:has(.blob-code)"
     );
@@ -648,134 +885,35 @@
     return null;
   }
 
-  function getCodingStandards() {
-    return new Promise((resolve) => {
-      try {
-        if (typeof chrome !== "undefined" && chrome.storage?.sync) {
-          chrome.storage.sync.get(["codingStandards"], (result) => {
-            if (chrome.runtime.lastError) {
-              console.warn("Storage error:", chrome.runtime.lastError);
-              resolve(localStorage.getItem("ai-review-coding-standards") || "");
-            } else {
-              resolve(result.codingStandards || "");
-            }
-          });
-        } else {
-          resolve(localStorage.getItem("ai-review-coding-standards") || "");
-        }
-      } catch (error) {
-        console.warn("Storage access failed:", error);
-        resolve(localStorage.getItem("ai-review-coding-standards") || "");
+  // Analysis functions
+  function formatDiffForAnalysis(diffData) {
+    let result = "";
+
+    diffData.forEach((file) => {
+      result += `\n--- File: ${file.fileName} ---\n`;
+
+      let addedLinesPresent = false;
+      const fileLinesContent = file.lines
+        .map((line) => {
+          const temp = line.type === "removed" ? "-" : " ";
+          const prefix = line.type === "added" ? "+" : temp;
+          if (line.type === "added") addedLinesPresent = true;
+          return `${prefix} ${String(line.lineNumber || "").padEnd(4)}: ${
+            line.content
+          }`;
+        })
+        .join("\n");
+
+      if (!addedLinesPresent && file.lines.length > 0) {
+        result += fileLinesContent + "\n";
+      } else if (addedLinesPresent) {
+        result += fileLinesContent + "\n";
+      } else {
+        return "";
       }
     });
-  }
 
-  // AI Call
-  async function analyzeCodeDiff(
-    diffDataForOneFile,
-    apiKey,
-    currentFileName = null
-  ) {
-    // Added currentFileName
-    const diffText = formatDiffForAnalysis(diffDataForOneFile); // This will now format only one file
-
-    // If the diffText for this single file is empty (e.g. only metadata changes, or empty file)
-    // you might want to skip the API call.
-    if (
-      !diffText.trim() ||
-      (diffText.includes("File: ") && diffText.split("\n").length < 3)
-    ) {
-      // Basic check for meaningful content
-      console.log(
-        `Skipping analysis for ${
-          currentFileName || "a file"
-        } as diff content is minimal.`
-      );
-      return []; // Return empty array, no suggestions
-    }
-
-    const codingStandards = await getCodingStandards();
-    const modal = await getModals();
-
-    // Pass currentFileName to the prompt creation
-    const prompt = createAnalysisPrompt(
-      diffText,
-      codingStandards,
-      currentFileName
-    );
-
-    const selectedModel = modal || "models/gemini-2.0-flash-thinking-exp-01-21"; // Ensure you are using a model suitable for your needs
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 4096, // This is for OUTPUT, input limit is often implicit or different
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const errorBody = await response.text(); // Try to get more details from the error
-      console.error("API Error Body:", errorBody);
-      throw new Error(
-        `API Error: ${response.status} for ${
-          currentFileName || "a file"
-        }. ${errorBody.substring(0, 200)}`
-      );
-    }
-
-    const data = await response.json();
-
-    // Check for blocked prompt or other API issues
-    if (data.candidates === undefined || data.candidates.length === 0) {
-      if (data.promptFeedback && data.promptFeedback.blockReason) {
-        console.warn(
-          `Prompt blocked for ${currentFileName || "a file"}. Reason: ${
-            data.promptFeedback.blockReason
-          }`,
-          data.promptFeedback
-        );
-        throw new Error(
-          `AI analysis blocked for ${currentFileName || "a file"}: ${
-            data.promptFeedback.blockReason
-          }. This can be due to safety settings or harmful content.`
-        );
-      } else {
-        console.warn(
-          `No candidates returned from AI for ${
-            currentFileName || "a file"
-          }. Response:`,
-          data
-        );
-        throw new Error(
-          `No response from AI for ${
-            currentFileName || "a file"
-          }, please try again or check the model.`
-        );
-      }
-    }
-
-    const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!responseText) {
-      // This case should ideally be caught by the candidates check above
-      throw new Error(
-        `No response text from AI for ${
-          currentFileName || "a file"
-        }, please try again.`
-      );
-    }
-
-    return parseAIResponse(responseText, currentFileName); // Pass filename for context in parsing/error
+    return result;
   }
 
   function createAnalysisPrompt(
@@ -783,9 +921,19 @@
     codingStandards = "",
     fileName = null
   ) {
-    // Added fileName
     let promptIntro;
-    if (fileName) {
+    const isChunk = fileName && fileName.includes("(part ");
+
+    if (isChunk) {
+      const match = fileName.match(/\(part (\d+)\/(\d+)\)/);
+      const currentChunk = match ? match[1] : "?";
+      const totalChunks = match ? match[2] : "?";
+
+      promptIntro = `Please analyze the following code changes for chunk ${currentChunk} of ${totalChunks} from the file "${fileName.replace(
+        / \(part \d+\/\d+\)$/,
+        ""
+      )}". Note that this is only a portion of the file being analyzed in chunks due to its size.`;
+    } else if (fileName) {
       promptIntro = `Please analyze the following code changes for the file "${fileName
         .split("/")
         .pop()}" (full path: "${fileName}") and provide specific, actionable code review suggestions.`;
@@ -797,8 +945,7 @@
 
     if (codingStandards.trim()) {
       prompt += `
-  
-  CODING STANDARDS TO FOLLOW:
+    CODING STANDARDS TO FOLLOW: 
   ${codingStandards}
   
   Please ensure your suggestions align with these coding standards and conventions for the file "${
@@ -807,7 +954,7 @@
     }
 
     prompt += `
-      
+  
   Focus on:
   1. Issues in NEW/ADDED code (lines with +) within the file "${
     fileName || "being analyzed"
@@ -829,9 +976,14 @@
   {
   "id": "unique_id_for_this_suggestion",
   "fileName": "${
-    fileName ? fileName.split("/").pop() : "exact_file_name_being_analyzed"
-  }", // AI should fill this with the correct file name provided
-  "lineNumber": line_number_within_the_diff_of_this_file, // Ensure this is the line number within the provided diff context
+    fileName
+      ? fileName
+          .split("/")
+          .pop()
+          .replace(/ \(part \d+\/\d+\)$/, "")
+      : "exact_file_name_being_analyzed"
+  }",
+  "lineNumber": line_number_within_the_diff_of_this_file,
   "type": "bug|security|performance|style|maintainability|standards",
   "severity": "high|medium|low",
   "title": "Brief issue title (max 10 words)",
@@ -843,13 +995,23 @@
   
   IMPORTANT:
   - The "fileName" in the JSON output MUST exactly match "${
-    fileName ? fileName.split("/").pop() : "the file name being analyzed"
-  }". If the provided diff is for 'src/components/MyComponent.js', the JSON output for fileName should be 'MyComponent.js' or 'src/components/MyComponent.js'.
+    fileName
+      ? fileName
+          .split("/")
+          .pop()
+          .replace(/ \(part \d+\/\d+\)$/, "")
+      : "the file name being analyzed"
+  }".
   - The "lineNumber" MUST correspond to a line number present in the ADDED (prefixed with '+') lines of the diff for this specific file.
   - If no issues are found for this specific file, return an empty array [].
   - Do NOT include suggestions for unchanged or removed lines unless they directly relate to an issue in an added line.
   - Be concise and actionable.
-
+  ${
+    isChunk
+      ? "- Remember this is only a part of the file, so focus on issues visible in this chunk."
+      : ""
+  }
+  
   DIFF TO ANALYZE (for ${fileName || "the request"}):
   ${diffText}
   
@@ -859,82 +1021,340 @@
     return prompt;
   }
 
-  function formatDiffForAnalysis(diffData) {
-    // diffData will now be an array with a single file's diff
-    let result = "";
-
-    diffData.forEach((file) => {
-      // This loop will run once
-      result += `\n--- File: ${file.fileName} ---\n`; // Use the full fileName here for context
-
-      let addedLinesPresent = false;
-      const fileLinesContent = file.lines
-        .map((line) => {
-          const prefix =
-            line.type === "added" ? "+" : line.type === "removed" ? "-" : " ";
-          if (line.type === "added") addedLinesPresent = true;
-          return `${prefix} ${String(line.lineNumber || "").padEnd(4)}: ${
-            line.content
-          }`;
-        })
-        .join("\n");
-
-      if (!addedLinesPresent && file.lines.length > 0) {
-        // If there are lines but none are additions, it might be a file mode change, deletion, or just context.
-        // The AI might not have much to comment on, or the prompt instructs it to focus on added lines.
-        // For now, we send it, but this is a place for potential optimization if it causes issues.
-        result += fileLinesContent + "\n";
-      } else if (addedLinesPresent) {
-        result += fileLinesContent + "\n";
-      } else {
-        // No lines at all for this file in diffData (should not happen if extractDiffData is correct)
-        // Or, no added lines and no other lines. Effectively empty for review.
-        return ""; // Return empty string if no relevant content to analyze for this file
-      }
-    });
-
-    return result;
-  }
-
   function parseAIResponse(responseText, fileNameContext = "current file") {
-    // Added context for errors
     try {
-      // The model should return JSON directly. If it's wrapped in markdown, attempt to extract.
-      let jsonString = responseText.trim();
-      if (jsonString.startsWith("```json")) {
-        jsonString = jsonString.substring(7);
-        if (jsonString.endsWith("```")) {
-          jsonString = jsonString.substring(0, jsonString.length - 3);
+      let jsonString = responseText
+        .replace(/^```json\s*/g, "")
+        .replace(/\s*```$/g, "")
+        .trim();
+
+      if (!jsonString.startsWith("[") || !jsonString.endsWith("]")) {
+        const match = jsonString.match(/\[[\s\S]*\]/);
+        if (match) {
+          jsonString = match[0];
         }
       }
 
       const parsed = JSON.parse(jsonString);
-      if (!Array.isArray(parsed)) {
-        console.warn(
-          `AI response for ${fileNameContext} is not a JSON array:`,
-          parsed
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+
+      console.warn(
+        `Invalid response format for ${fileNameContext}. Expected array, got:`,
+        typeof parsed
+      );
+      return [];
+    } catch (e) {
+      console.warn(
+        `Failed to parse response for ${fileNameContext}:`,
+        e.message,
+        "\nResponse was:",
+        responseText.substring(0, 500)
+      );
+      return [];
+    }
+  }
+
+  function deduplicateSuggestions(suggestions) {
+    const uniqueSuggestions = [];
+    const seenSuggestions = new Set();
+
+    suggestions.forEach((suggestion) => {
+      const key = `${suggestion.fileName}-${suggestion.lineNumber}-${suggestion.title}`;
+
+      if (!seenSuggestions.has(key)) {
+        seenSuggestions.add(key);
+        uniqueSuggestions.push(suggestion);
+      }
+    });
+
+    return uniqueSuggestions;
+  }
+
+  async function analyzeCodeDiff(
+    diffDataForOneFile,
+    apiKey,
+    currentFileName = null
+  ) {
+    try {
+      const diffText = formatDiffForAnalysis(diffDataForOneFile);
+
+      if (
+        !diffText.trim() ||
+        (diffText.includes("File: ") && diffText.split("\n").length < 3)
+      ) {
+        console.log(
+          `Skipping analysis for ${
+            currentFileName || "a file"
+          } as diff content is minimal.`
         );
         return [];
       }
-      return parsed;
-    } catch (e) {
-      console.warn(
-        `Failed to parse AI response for ${fileNameContext}:`,
-        e.message,
-        "Response was:",
-        responseText.substring(0, 500)
+
+      const codingStandards = await getCodingStandards();
+      const modal = await getModals();
+
+      const prompt = createAnalysisPrompt(
+        diffText,
+        codingStandards,
+        currentFileName
       );
-      if (!responseText.trim().startsWith("[") && responseText.length < 300) {
-        showNotification(
-          `AI Error (${fileNameContext}): ${responseText.substring(0, 100)}`,
-          "warning"
+
+      const selectedModel =
+        modal || "models/gemini-2.0-flash-thinking-exp-01-21";
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.2,
+              topK: 40,
+              topP: 0.95,
+              maxOutputTokens: 4096,
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        console.error("API Error Body:", errorBody);
+
+        const errorMessage = errorBody.substring(0, 200);
+        const isRateLimitError =
+          errorMessage.includes("429") ||
+          errorMessage.includes("rate limit") ||
+          errorMessage.includes("quota");
+
+        if (isRateLimitError) {
+          throw new Error(
+            `API rate limit exceeded for ${
+              currentFileName || "file"
+            }. Please try again in a few minutes.`
+          );
+        } else {
+          throw new Error(
+            `API Error: ${response.status} for ${
+              currentFileName || "a file"
+            }. ${errorBody.substring(0, 200)}`
+          );
+        }
+      }
+      if (response.ok) {
+        completedApiCalls++;
+      }
+
+      const data = await response.json();
+
+      if (data.candidates === undefined || data.candidates.length === 0) {
+        if (data.promptFeedback && data.promptFeedback.blockReason) {
+          console.warn(
+            `Prompt blocked for ${currentFileName || "a file"}. Reason: ${
+              data.promptFeedback.blockReason
+            }`,
+            data.promptFeedback
+          );
+          throw new Error(
+            `AI analysis blocked for ${currentFileName || "a file"}: ${
+              data.promptFeedback.blockReason
+            }. This can be due to safety settings or harmful content.`
+          );
+        } else {
+          console.warn(
+            `No candidates returned from AI for ${
+              currentFileName || "a file"
+            }. Response:`,
+            data
+          );
+        }
+      }
+
+      const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!responseText) {
+        throw new Error(
+          `No response text from AI for ${
+            currentFileName || "a file"
+          }, please try again.`
+        );
+      }
+
+      return parseAIResponse(responseText, currentFileName);
+    } catch (error) {
+      const errorMessage = error.message || "Unknown error";
+      console.error(`Analysis error for ${currentFileName || "file"}:`, error);
+      throw new Error(
+        `Failed to analyze ${currentFileName || "file"}: ${errorMessage}`
+      );
+    }
+  }
+
+  async function analyzeChunkedFile(fileDiff, apiKey) {
+    const fileName = fileDiff.fileName;
+    const allLines = fileDiff.lines;
+    const chunks = chunkLines(allLines, CONFIG.chunkSize);
+    let allSuggestions = [];
+    const totalChunks = chunks.length;
+
+    console.log(
+      `File ${fileName} is large, analyzing in ${totalChunks} chunks`
+    );
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkLines = chunks[i];
+      const chunkDiff = {
+        ...fileDiff,
+        lines: chunkLines,
+      };
+
+      try {
+        const btnText = document.getElementById("btn-text");
+        if (btnText) {
+          btnText.textContent = `Analyzing ${fileName.split("/").pop()} (${
+            i + 1
+          }/${totalChunks})...`;
+        }
+
+        const chunkSuggestions = await analyzeCodeDiff(
+          [chunkDiff],
+          apiKey,
+          `${fileName} (part ${i + 1}/${totalChunks})`
+        );
+
+        if (chunkSuggestions && chunkSuggestions.length > 0) {
+          const processedSuggestions = chunkSuggestions.map((suggestion) => ({
+            ...suggestion,
+            fileName: fileName.split("/").pop(),
+          }));
+          allSuggestions.push(...processedSuggestions);
+        }
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, CONFIG.apiRequestDelay)
+        );
+      } catch (error) {
+        console.error(
+          `Error analyzing chunk ${i + 1}/${totalChunks} of ${fileName}:`,
+          error
         );
       }
     }
-    return [];
+
+    return allSuggestions;
   }
 
-  // suggestion injection
+  async function analyzeSelectedFiles(selectedDiffData) {
+    if (isAnalyzing) return;
+
+    try {
+      isAnalyzing = true;
+      updateButtonState(true);
+      clearPreviousSuggestions();
+      hideNavigationButtons();
+      completedApiCalls = 0;
+
+      const apiKey = await getApiKey();
+      if (!apiKey) {
+        showNotification(
+          "Please configure API key in extension options",
+          "error"
+        );
+        openOptionsPage();
+        return;
+      }
+
+      let allSuggestions = [];
+      const totalFiles = selectedDiffData.length;
+
+      if (totalFiles > 1) {
+        createProgressBar();
+      }
+
+      const analysisTasks = selectedDiffData.map((fileDiff, index) => {
+        return async () => {
+          try {
+            const btnText = document.getElementById("btn-text");
+            if (btnText) {
+              btnText.textContent = `Analyzing ${index + 1}/${totalFiles}...`;
+            }
+
+            updateProgressBar(
+              index,
+              totalFiles,
+              `Analyzing ${fileDiff.fileName.split("/").pop()}`
+            );
+
+            const fileSize = JSON.stringify(fileDiff).length;
+
+            // If file is too large, split into smaller chunks
+            if (fileSize > CONFIG.largeFileSizeThreshold) {
+              const suggestions = await analyzeChunkedFile(fileDiff, apiKey);
+              return suggestions || [];
+            } else {
+              // Analyze file normally if not too large
+              const suggestionsForFile = await analyzeCodeDiff(
+                [fileDiff],
+                apiKey,
+                fileDiff.fileName
+              );
+              return suggestionsForFile || [];
+            }
+          } catch (fileError) {
+            console.error(
+              `Error analyzing file ${fileDiff.fileName}:`,
+              fileError
+            );
+            return [];
+          }
+        };
+      });
+
+      const taskResults = await promiseAllInBatches(
+        analysisTasks.map((task) => task()),
+        CONFIG.maxConcurrentRequests
+      );
+
+      taskResults.forEach((suggestions) => {
+        if (suggestions && suggestions.length > 0) {
+          allSuggestions.push(...suggestions);
+        }
+      });
+
+      updateProgressBar(totalFiles, totalFiles, "Analysis complete!");
+
+      // Deduplicate suggestions before displaying
+      const uniqueSuggestions = deduplicateSuggestions(allSuggestions);
+
+      handleAnalysisResults(uniqueSuggestions, selectedDiffData);
+    } catch (error) {
+      console.error("Analysis error:", error);
+      showNotification(
+        "Something went wrong during analysis. Please try again.",
+        "error"
+      );
+    } finally {
+      isAnalyzing = false;
+      updateButtonState(false);
+    }
+  }
+
+  // Suggestion injection functions
+  function handleAnalysisResults(suggestions, diffData) {
+    if (suggestions && suggestions.length > 0) {
+      injectSuggestions(suggestions, diffData);
+      showNavigationButtons();
+      showNotification(`Found ${suggestions.length} suggestions`, "success");
+    } else {
+      hideNavigationButtons();
+      showNotification("No issues found. Code looks good!", "success");
+    }
+  }
+
   function injectSuggestions(suggestions, diffData) {
     suggestions.forEach((suggestion) => {
       const targetFile = findTargetFile(suggestion, diffData);
@@ -949,9 +1369,6 @@
 
   function findTargetFile(suggestion, diffData) {
     return diffData.find((file) => {
-      // Check if suggestion.fileName (from AI) is part of file.fileName (from DOM)
-      // OR if file.fileName (from DOM) is part of suggestion.fileName (from AI)
-      // This handles cases where one is a full path and the other is just the basename.
       const aiFileName = suggestion.fileName.toLowerCase();
       const domFileName = file.fileName.toLowerCase();
       return (
@@ -965,32 +1382,34 @@
       (line) =>
         line.type === "added" && line.lineNumber === suggestion.lineNumber
     );
+
     if (foundLine) return foundLine;
 
-    const tolerance = 2;
-    let potentialLines = targetFile.lines.filter(
-      (line) => Math.abs(line.lineNumber - suggestion.lineNumber) <= tolerance
-    );
+    const tolerance = 3;
+    const addedLines = targetFile.lines.filter((line) => line.type === "added");
 
-    foundLine = potentialLines.find((line) => line.type === "added");
-    if (foundLine) return foundLine;
-
-    if (potentialLines.length > 0) {
-      potentialLines.sort(
+    if (addedLines.length > 0) {
+      addedLines.sort(
         (a, b) =>
           Math.abs(a.lineNumber - suggestion.lineNumber) -
           Math.abs(b.lineNumber - suggestion.lineNumber)
       );
-      return potentialLines[0];
+
+      if (
+        Math.abs(addedLines[0].lineNumber - suggestion.lineNumber) <= tolerance
+      ) {
+        return addedLines[0];
+      }
     }
 
-    console.warn(
-      "Could not precisely find target line for suggestion:",
-      suggestion,
-      "in file:",
-      targetFile.fileName
+    const allLines = [...targetFile.lines];
+    allLines.sort(
+      (a, b) =>
+        Math.abs(a.lineNumber - suggestion.lineNumber) -
+        Math.abs(b.lineNumber - suggestion.lineNumber)
     );
-    return null;
+
+    return allLines[0] || null;
   }
 
   function injectSuggestionAfterLine(rowElement, suggestion) {
@@ -1019,6 +1438,7 @@
   }
 
   function createSuggestionContent(suggestion) {
+    const fragment = document.createDocumentFragment();
     const suggestionDiv = document.createElement("div");
     suggestionDiv.style.cssText = getSuggestionStyles(suggestion.severity);
 
@@ -1033,6 +1453,7 @@
       suggestionDiv.appendChild(fixDiv);
     }
 
+    fragment.appendChild(suggestionDiv);
     return suggestionDiv;
   }
 
@@ -1043,18 +1464,18 @@
       : "linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)";
 
     return `
-        background: ${backgroundColor};
-        border-left: 4px solid ${
-          SEVERITY_COLORS[severity] || SEVERITY_COLORS.default
-        };
-        margin: 2px 8px;
-        padding: 12px;
-        border-radius: 0 6px 6px 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 13px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        transition: all 0.2s ease;
-      `;
+      background: ${backgroundColor};
+      border-left: 4px solid ${
+        SEVERITY_COLORS[severity] || SEVERITY_COLORS.default
+      };
+      margin: 2px 8px;
+      padding: 12px;
+      border-radius: 0 6px 6px 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      transition: all 0.2s ease;
+    `;
   }
 
   function createSuggestionHeader(suggestion) {
@@ -1089,14 +1510,14 @@
   function createSeverityBadge(severity) {
     const badge = document.createElement("span");
     badge.style.cssText = `
-        background: ${SEVERITY_COLORS[severity] || SEVERITY_COLORS.default};
-        color: white;
-        padding: 2px 6px;
-        border-radius: 10px;
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
-      `;
+      background: ${SEVERITY_COLORS[severity] || SEVERITY_COLORS.default};
+      color: white;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    `;
     badge.textContent = severity;
     return badge;
   }
@@ -1104,13 +1525,13 @@
   function createAIBadge() {
     const badge = document.createElement("span");
     badge.style.cssText = `
-        background: #667eea;
-        color: white;
-        padding: 2px 6px;
-        border-radius: 10px;
-        font-size: 10px;
-        font-weight: 600;
-      `;
+      background: #667eea;
+      color: white;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+    `;
     badge.textContent = "🤖 AI";
     return badge;
   }
@@ -1138,7 +1559,6 @@
         const suggestionRow = e.target.closest(".ai-suggestion-row");
         if (suggestionRow) {
           suggestionRow.remove();
-          // Update navigation after removing suggestion
           const remainingSuggestions =
             document.querySelectorAll(".ai-suggestion-row");
           if (remainingSuggestions.length === 0) {
@@ -1164,20 +1584,20 @@
   function createActionButton(text, color, title) {
     const btn = document.createElement("button");
     btn.style.cssText = `
-        background: ${color};
-        color: white;
-        border: none;
-        padding: 4px 6px;
-        border-radius: 12px;
-        font-size: 10px;
-        cursor: pointer;
-        transition: opacity 0.2s;
-        min-width: 24px;
-        height: 20px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      `;
+      background: ${color};
+      color: white;
+      border: none;
+      padding: 4px 6px;
+      border-radius: 12px;
+      font-size: 10px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      min-width: 24px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    `;
     btn.textContent = text;
     btn.title = title;
 
@@ -1196,6 +1616,7 @@
     description.textContent = suggestion.description;
     return description;
   }
+
   function createSuggestedFix(suggestedFix) {
     const darkMode = isDarkMode();
     const backgroundColor = darkMode ? "#161b22" : "#f1f3f4";
@@ -1205,32 +1626,32 @@
 
     const fixDiv = document.createElement("div");
     fixDiv.style.cssText = `
-        background: ${backgroundColor};
-        border: 1px solid ${borderColor};
-        border-radius: 4px;
-        padding: 8px;
-        font-family: 'SFMono-Regular', Consolas, monospace;
-        font-size: 12px;
-        margin-top: 8px;
-        overflow-x: auto;
-      `;
+      background: ${backgroundColor};
+      border: 1px solid ${borderColor};
+      border-radius: 4px;
+      padding: 8px;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 12px;
+      margin-top: 8px;
+      overflow-x: auto;
+    `;
 
     const fixLabel = document.createElement("div");
     fixLabel.style.cssText = `
-        font-size: 11px; 
-        color: ${labelColor}; 
-        margin-bottom: 4px; 
-        font-weight: 600;
-      `;
+      font-size: 11px; 
+      color: ${labelColor}; 
+      margin-bottom: 4px; 
+      font-weight: 600;
+    `;
     fixLabel.textContent = "💡 Suggested fix:";
 
     const fixCode = document.createElement("pre");
     fixCode.style.cssText = `
-        margin: 0; 
-        white-space: pre-wrap; 
-        word-wrap: break-word;
-        color: ${textColor};
-      `;
+      margin: 0; 
+      white-space: pre-wrap; 
+      word-wrap: break-word;
+      color: ${textColor};
+    `;
     fixCode.textContent = suggestedFix;
 
     fixDiv.appendChild(fixLabel);
@@ -1239,38 +1660,33 @@
     return fixDiv;
   }
 
-  function clearPreviousSuggestions() {
-    document
-      .querySelectorAll(".ai-suggestion-row")
-      .forEach((row) => row.remove());
+  async function startSelectedReview() {
+    if (selectedFiles.size === 0) {
+      showNotification("Please select at least one file to review", "warning");
+      return;
+    }
 
-    // Reset navigation state
-    currentSuggestionIndex = 0;
-    totalSuggestions = 0;
-    hideNavigationButtons();
+    hideFileSelector();
+
+    const allDiffData = extractDiffData();
+    const selectedDiffData = Array.from(selectedFiles)
+      .map((index) => allDiffData[index])
+      .filter(Boolean);
+
+    if (selectedDiffData.length === 0) {
+      showNotification("No valid files selected", "warning");
+      return;
+    }
+
+    await analyzeSelectedFiles(selectedDiffData);
   }
 
-  function showNotification(message, type) {
-    const notification = document.createElement("div");
-    notification.style.cssText = `
-        position: fixed;
-        top: 140px;
-        right: 20px;
-        z-index: 10001;
-        background: ${NOTIFICATION_COLORS[type] || NOTIFICATION_COLORS.success};
-        color: white;
-        padding: 10px 14px;
-        border-radius: 6px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 13px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        max-width: 280px;
-        word-wrap: break-word;
-      `;
-    notification.textContent = message;
-
-    document.body.appendChild(notification);
-    setTimeout(() => notification.remove(), 4000);
+  function openOptionsPage() {
+    try {
+      chrome.runtime.sendMessage({ action: "openOptions" });
+    } catch (e) {
+      console.warn("Could not open options:", e);
+    }
   }
 
   function isGitHubDiffPage() {
@@ -1296,20 +1712,19 @@
           createFloatingButton();
           createNavigationButtons();
         }
-      }, 1500);
+      }, CONFIG.initializationDelay);
     } else {
-      if (floatingButton) {
-        floatingButton.remove();
-        floatingButton = null;
-      }
-      if (navigationButtons) {
-        navigationButtons.remove();
-        navigationButtons = null;
-      }
+      [floatingButton, navigationButtons, fileSelector].forEach((element) => {
+        if (element) {
+          element.remove();
+        }
+      });
+      floatingButton = null;
+      navigationButtons = null;
+      fileSelector = null;
     }
   }
 
-  // navigation handling for SPA
   function setupNavigationObserver() {
     let lastUrl = location.href;
 
@@ -1317,7 +1732,7 @@
       const url = location.href;
       if (url !== lastUrl) {
         lastUrl = url;
-        setTimeout(initialize, 1000);
+        setTimeout(initialize, CONFIG.navigationObserverDelay);
       }
     }).observe(document, { subtree: true, childList: true });
   }
