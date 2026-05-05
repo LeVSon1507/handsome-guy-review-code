@@ -1,7 +1,5 @@
 # Privacy Policy - AI Code Review Assistant
 
-**Last updated:** June 2, 2025
-
 ## Quick Summary
 
 This extension only stores your API key locally on your device. We don't collect, store, or share any personal information or code content.
